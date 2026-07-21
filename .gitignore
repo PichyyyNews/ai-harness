@@ -1,0 +1,21 @@
+# Frontend
+node_modules/
+dist/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+
+# Downloaded GGUF models are runtime data only.
+models/
+*.gguf
+
+# Platform-specific llama.cpp sidecar binaries are supplied by CI/release automation.
+src-tauri/bin/llama-server-*
+src-tauri/bin/*.dll
+!src-tauri/bin/README.md
+
+# Local environment
+.env
+.env.local
+.DS_Store

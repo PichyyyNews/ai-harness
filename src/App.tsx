@@ -1,0 +1,574 @@
+import { Children, isValidElement, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { ArrowDown, ArrowUp, CaretRight, ChatCircleDots, Check, Copy, DownloadSimple, MagnifyingGlass, Minus, PencilSimple, Play, Plus, Square, Stop, Trash, X } from "@phosphor-icons/react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
+import logoUrl from "../logo.svg";
+import { Badge, Button, Card, Textarea, Toast } from "./components";
+import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, SessionDetail, SessionSummary } from "./types";
+import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
+import styles from "./App.module.css";
+
+type Screen = "picker" | "chat";
+type MenuName = "File" | "Edit" | "View" | "Help";
+type WindowAction = "minimize" | "maximize" | "close";
+type ConversationMessage = ChatMessage & { process?: string[] };
+
+const formatBytes = (bytes?: number) => {
+  if (!bytes) return "Size unavailable";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index < 2 ? 0 : 1)} ${units[index]}`;
+};
+
+const preferredFile = (model?: CatalogModel): ModelFile | undefined =>
+  model?.files.find((file) => !file.name.toLowerCase().includes("mmproj")) ?? model?.files[0];
+
+const formatSessionTime = (timestamp: string) => {
+  const elapsed = Date.now() - Number(timestamp);
+  if (!Number.isFinite(elapsed) || elapsed < 60_000) return "now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
+  return `${Math.floor(elapsed / 86_400_000)}d`;
+};
+
+export default function App() {
+  const [screen, setScreen] = useState<Screen>("picker");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [activeMenu, setActiveMenu] = useState<MenuName | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [models, setModels] = useState<CatalogModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<CatalogModel | null>(null);
+  const [selectedFile, setSelectedFile] = useState("");
+  const [installedModels, setInstalledModels] = useState<InstalledModel[]>([]);
+  const [activeModel, setActiveModel] = useState<InstalledModel | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [download, setDownload] = useState<DownloadProgress | null>(null);
+  const [newChatRequest, setNewChatRequest] = useState(0);
+
+  const refreshInstalled = useCallback(async () => {
+    const installed = await invoke<InstalledModel[]>("list_installed_models");
+    setInstalledModels(installed);
+    return installed;
+  }, []);
+
+  const searchModels = useCallback(async (query = "") => {
+    setCatalogLoading(true);
+    try {
+      const results = await invoke<CatalogModel[]>("search_models", { query });
+      setModels(results);
+      if (!selectedModel && results[0]) {
+        setSelectedModel(results[0]);
+        setSelectedFile(preferredFile(results[0])?.name ?? "");
+      }
+    } catch (error) {
+      setToast(`Could not load the Hugging Face catalog: ${String(error)}`);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [selectedModel]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const installed = await refreshInstalled();
+        if (!cancelled && installed[0]) {
+          setActiveModel(installed[0]);
+          setScreen("chat");
+        }
+      } catch (error) {
+        if (!cancelled) setToast(`Could not read installed models: ${String(error)}`);
+      }
+      if (!cancelled) await searchModels();
+    })();
+    return () => { cancelled = true; };
+  }, [refreshInstalled, searchModels]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<DownloadProgress>("model-download-progress", (event) => setDownload(event.payload)).then((handler) => { unlisten = handler; });
+    return () => unlisten?.();
+  }, []);
+
+  const installedSelection = useMemo(
+    () => selectedModel && selectedFile ? installedModels.find((model) => model.repoId === selectedModel.id && model.fileName === selectedFile) : undefined,
+    [installedModels, selectedFile, selectedModel],
+  );
+
+  const chooseModel = async (model: CatalogModel) => {
+    setSelectedModel(model);
+    setSelectedFile(preferredFile(model)?.name ?? "");
+    setDetailsLoading(true);
+    try {
+      const details = await invoke<CatalogModel>("get_model_details", { repoId: model.id });
+      setSelectedModel(details);
+      setSelectedFile((current) => details.files.some((file) => file.name === current) ? current : (preferredFile(details)?.name ?? ""));
+    } catch (error) {
+      setToast(`Could not load the model files: ${String(error)}`);
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const installSelected = async () => {
+    if (!selectedModel || !selectedFile) return;
+    setDownload({ repoId: selectedModel.id, fileName: selectedFile, stage: "downloading", downloadedBytes: 0, totalBytes: undefined, percent: 0 });
+    try {
+      const installed = await invoke<InstalledModel>("install_model", { request: { repoId: selectedModel.id, fileName: selectedFile } });
+      setInstalledModels(await refreshInstalled());
+      setActiveModel(installed);
+      setDownload(null);
+      setScreen("chat");
+      setToast("Model verified and ready to use locally.");
+    } catch (error) {
+      setDownload(null);
+      setToast(`Installation did not complete: ${String(error)}`);
+    }
+  };
+
+  return (
+    <main className={styles.app} data-theme={theme}>
+      <DesktopMenuBar
+        activeMenu={activeMenu}
+        onMenuChange={setActiveMenu}
+        onWindowError={setToast}
+        onAction={(action) => {
+          setActiveMenu(null);
+          if (action === "model-picker") setScreen("picker");
+          if (action === "workspace") activeModel ? setScreen("chat") : setToast("Install a model before opening the chat workspace.");
+          if (action === "light") setTheme("light");
+          if (action === "dark") setTheme("dark");
+          if (action === "new-chat") {
+            if (activeModel) {
+              setScreen("chat");
+              setNewChatRequest((current) => current + 1);
+            } else setToast("Choose and install a model first.");
+          }
+          if (action === "about") setToast("AI Harness — a local-first desktop workspace for open models.");
+          if (action === "shortcuts") setToast("Keyboard shortcuts will be added with the chat milestone.");
+        }}
+      />
+
+      <div className={`${styles.contentArea} ${screen === "chat" ? styles.chatContentArea : ""}`}>
+        {screen === "picker" ? (
+          <ModelPicker
+            catalogLoading={catalogLoading}
+            detailsLoading={detailsLoading}
+            models={models}
+            selectedModel={selectedModel}
+            selectedFile={selectedFile}
+            installed={installedSelection}
+            download={download}
+            onSearch={searchModels}
+            onSelect={chooseModel}
+            onFileChange={setSelectedFile}
+            onInstall={installSelected}
+            onOpenInstalled={() => {
+              if (installedSelection) {
+                setActiveModel(installedSelection);
+                setScreen("chat");
+              }
+            }}
+          />
+        ) : activeModel ? (
+          <ChatWorkspace model={activeModel} newChatRequest={newChatRequest} onBack={() => setScreen("picker")} onNotify={setToast} />
+        ) : null}
+      </div>
+
+      {toast && <div className={styles.toastRegion}><Toast message={toast} type="info" onClose={() => setToast(null)} /></div>}
+    </main>
+  );
+}
+
+async function controlWindow(action: WindowAction) {
+  const command = action === "minimize" ? "minimize_window" : action === "maximize" ? "toggle_maximize_window" : "close_window";
+  await invoke(command);
+}
+
+async function startWindowDrag() { await invoke("start_window_dragging"); }
+
+interface DesktopMenuBarProps {
+  activeMenu: MenuName | null;
+  onMenuChange: (menu: MenuName | null) => void;
+  onWindowError: (message: string) => void;
+  onAction: (action: "model-picker" | "workspace" | "light" | "dark" | "new-chat" | "about" | "shortcuts") => void;
+}
+
+function DesktopMenuBar({ activeMenu, onMenuChange, onWindowError, onAction }: DesktopMenuBarProps) {
+  const reportWindowError = (label: string, error: unknown) => onWindowError(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+  const menus: Record<MenuName, Array<{ label: string; action: Parameters<DesktopMenuBarProps["onAction"]>[0] }>> = {
+    File: [{ label: "New chat", action: "new-chat" }, { label: "Choose model", action: "model-picker" }],
+    Edit: [{ label: "Keyboard shortcuts", action: "shortcuts" }],
+    View: [{ label: "Light appearance", action: "light" }, { label: "Dark appearance", action: "dark" }, { label: "Chat workspace", action: "workspace" }],
+    Help: [{ label: "About AI Harness", action: "about" }],
+  };
+  return <header className={styles.desktopMenuBar}>
+    <button className={styles.brand} onClick={() => onAction("model-picker")} aria-label="Open model picker"><img className={styles.brandLogo} src={logoUrl} alt="" /><span>AI Harness</span></button>
+    <nav className={styles.menuList} aria-label="Application menu">
+      {(Object.keys(menus) as MenuName[]).map((menu) => <div className={styles.menuGroup} key={menu}>
+        <button className={`${styles.menuTrigger} ${activeMenu === menu ? styles.menuTriggerActive : ""}`} onClick={() => onMenuChange(activeMenu === menu ? null : menu)} aria-haspopup="menu" aria-expanded={activeMenu === menu}>{menu}</button>
+        {activeMenu === menu && <div className={styles.menuPopover} role="menu" aria-label={`${menu} menu`}>
+          {menus[menu].map((item) => <button key={item.label} role="menuitem" onClick={() => onAction(item.action)}>{item.label}</button>)}
+        </div>}
+      </div>)}
+    </nav>
+    <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" onMouseDown={(event) => { if (event.button === 0) void startWindowDrag().catch((error: unknown) => reportWindowError("Window drag", error)); }} />
+    <div className={styles.windowControls} aria-label="Window controls">
+      <button className={styles.windowControl} onClick={() => void controlWindow("minimize").catch((error: unknown) => reportWindowError("Minimize", error))} aria-label="Minimize window"><Minus /></button>
+      <button className={styles.windowControl} onClick={() => void controlWindow("maximize").catch((error: unknown) => reportWindowError("Maximize", error))} aria-label="Maximize or restore window"><Square /></button>
+      <button className={`${styles.windowControl} ${styles.closeControl}`} onClick={() => void controlWindow("close").catch((error: unknown) => reportWindowError("Close", error))} aria-label="Close window"><X /></button>
+    </div>
+  </header>;
+}
+
+interface ModelPickerProps {
+  catalogLoading: boolean;
+  detailsLoading: boolean;
+  models: CatalogModel[];
+  selectedModel: CatalogModel | null;
+  selectedFile: string;
+  installed?: InstalledModel;
+  download: DownloadProgress | null;
+  onSearch: (query: string) => Promise<void>;
+  onSelect: (model: CatalogModel) => Promise<void>;
+  onFileChange: (file: string) => void;
+  onInstall: () => Promise<void>;
+  onOpenInstalled: () => void;
+}
+
+function ModelPicker({ catalogLoading, detailsLoading, models, selectedModel, selectedFile, installed, download, onSearch, onSelect, onFileChange, onInstall, onOpenInstalled }: ModelPickerProps) {
+  const [query, setQuery] = useState("");
+  const selectedDownloading = download && selectedModel && download.repoId === selectedModel.id && download.fileName === selectedFile;
+  const selectedModelFile = selectedModel?.files.find((file) => file.name === selectedFile);
+  return <section className={styles.picker} aria-labelledby="picker-heading">
+    <div className={styles.intro}>
+      <Badge size="sm">First launch</Badge>
+      <h1 id="picker-heading">Choose a local model to get started.</h1>
+      <p>Search the public Hugging Face GGUF catalog. AI Harness downloads your selected file to this computer, verifies its SHA-256 checksum, then unlocks chat.</p>
+    </div>
+    <form className={styles.searchBar} onSubmit={(event) => { event.preventDefault(); void onSearch(query); }}>
+      <MagnifyingGlass aria-hidden="true" />
+      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search GGUF models, creators, or families" aria-label="Search Hugging Face GGUF models" />
+      <Button type="submit" variant="secondary" size="sm" loading={catalogLoading}>Search</Button>
+    </form>
+    <div className={styles.modelGrid} aria-busy={catalogLoading}>
+      {catalogLoading && Array.from({ length: 6 }).map((_, index) => <Card key={index} className={styles.modelCard} loading>Loading model</Card>)}
+      {!catalogLoading && models.map((model) => <button className={`${styles.modelCard} ${selectedModel?.id === model.id ? styles.modelCardSelected : ""}`} key={model.id} onClick={() => void onSelect(model)} aria-pressed={selectedModel?.id === model.id}>
+        <div className={styles.modelHeader}><div><span className={styles.modelFamily}>{model.author ?? "Hugging Face"}</span><h2>{model.id.split("/").at(-1)}</h2></div>{selectedModel?.id === model.id && <Badge variant="success" size="sm">Selected</Badge>}</div>
+        <p className={styles.repoId}>{model.id}</p>
+        <div className={styles.modelMeta}><span><strong>{model.files.length}</strong> GGUF files</span><span><strong>{model.downloads.toLocaleString()}</strong> downloads</span><span><strong>{model.likes.toLocaleString()}</strong> likes</span></div>
+      </button>)}
+    </div>
+    {!catalogLoading && !models.length && <p className={styles.emptyCatalog}>No GGUF models matched that search. Try another phrase.</p>}
+    {selectedModel && <Card className={styles.selectionSummary}>
+      <Card.Body className={styles.selectionBody}>
+        <div className={styles.selectionInfo}><span className={styles.summaryLabel}>Selected model file</span><h2>{selectedModel.id}</h2>
+          <label className={styles.fileLabel}>GGUF file<select value={selectedFile} disabled={detailsLoading || Boolean(selectedDownloading)} onChange={(event) => onFileChange(event.target.value)}>{selectedModel.files.map((file) => <option value={file.name} key={file.name}>{file.name} — {formatBytes(file.size)}</option>)}</select></label>
+          {selectedModelFile?.sha256 ? <p>SHA-256 available · {formatBytes(selectedModelFile.size)} download</p> : <p>Loading checksum metadata…</p>}
+        </div>
+        <div className={styles.summaryActions}>
+          {installed ? <Button iconPrefix={<ChatCircleDots />} onClick={onOpenInstalled}>Open chat</Button> : <Button iconPrefix={<DownloadSimple />} onClick={() => void onInstall()} disabled={detailsLoading || !selectedModelFile?.sha256 || Boolean(download)} loading={detailsLoading}>Install model</Button>}
+        </div>
+      </Card.Body>
+      {selectedDownloading && <div className={styles.downloadProgress}><div className={styles.progressCopy}><span>{download.stage === "verifying" ? "Verifying SHA-256 checksum…" : `Downloading ${formatBytes(download.downloadedBytes)}${download.totalBytes ? ` of ${formatBytes(download.totalBytes)}` : ""}`}</span><strong>{download.percent ?? "…"}{download.percent !== undefined ? "%" : ""}</strong></div><div className={styles.progressTrack}><span style={{ width: `${download.percent ?? 5}%` }} /></div></div>}
+    </Card>}
+  </section>;
+}
+
+function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: InstalledModel; newChatRequest: number; onBack: () => void; onNotify: (message: string) => void }) {
+  const [starting, setStarting] = useState(false);
+  const [engineStarted, setEngineStarted] = useState(false);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionModelId, setActiveSessionModelId] = useState<string | undefined>();
+  const [sessionQuery, setSessionQuery] = useState("");
+  const [draft, setDraft] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const streamAbort = useRef<AbortController | null>(null);
+  const transcript = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const pendingDelta = useRef("");
+  const pendingAnimationFrame = useRef<number | null>(null);
+
+  const refreshSessions = useCallback(async (query = sessionQuery) => {
+    try {
+      setSessions(await invoke<SessionSummary[]>("list_sessions", { query: query || undefined }));
+    } catch (error) {
+      onNotify(`Could not load saved chats: ${String(error)}`);
+    }
+  }, [onNotify, sessionQuery]);
+
+  const openSession = useCallback(async (sessionId: string) => {
+    if (streaming) return;
+    try {
+      const detail = await invoke<SessionDetail>("get_session", { sessionId });
+      setActiveSessionId(detail.session.id);
+      setActiveSessionModelId(detail.session.modelId);
+      setMessages(detail.messages.map((message) => ({ role: message.role, content: message.content, process: message.thinkingSummary ? [message.thinkingSummary] : [] })));
+      if (detail.session.modelId && detail.session.modelId !== model.repoId) onNotify(`This chat was created with ${detail.session.modelId}. Select that model before continuing.`);
+    } catch (error) {
+      onNotify(`Could not open saved chat: ${String(error)}`);
+    }
+  }, [model.repoId, onNotify, streaming]);
+
+  const flushPendingDelta = useCallback(() => {
+    pendingAnimationFrame.current = null;
+    const delta = pendingDelta.current;
+    pendingDelta.current = "";
+    if (!delta) return;
+    setMessages((current) => current.map((message, index) => index === current.length - 1 ? { ...message, content: message.content + delta } : message));
+  }, []);
+
+  useEffect(() => () => {
+    streamAbort.current?.abort();
+    if (pendingAnimationFrame.current !== null) cancelAnimationFrame(pendingAnimationFrame.current);
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void refreshSessions(); }, 200);
+    return () => window.clearTimeout(timer);
+  }, [refreshSessions, sessionQuery]);
+  useEffect(() => {
+    if (streaming) return;
+    setActiveSessionId(null);
+    setActiveSessionModelId(undefined);
+    setMessages([]);
+  }, [newChatRequest]);
+  const updateScrollState = useCallback(() => {
+    const element = transcript.current;
+    if (!element) return;
+    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    stickToBottom.current = atBottom;
+    setIsAtBottom(atBottom);
+  }, []);
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const element = transcript.current;
+    if (!element) return;
+    stickToBottom.current = true;
+    setIsAtBottom(true);
+    element.scrollTo({ top: element.scrollHeight, behavior });
+  }, []);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const element = transcript.current;
+      if (!element) return;
+      // During generation the transcript is deliberately manual-scroll: new
+      // tokens never move the viewport. The down-arrow becomes the explicit
+      // way to catch up with the latest output.
+      if (streaming) {
+        updateScrollState();
+      } else if (stickToBottom.current) {
+        element.scrollTop = element.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages, streaming, updateScrollState]);
+  const startEngine = async () => {
+    setStarting(true);
+    try {
+      const info = await invoke<{ backend: string; gpuLayers: number; contextSize: number; runtimeRelease: string; fallbackReason?: string }>("start_engine", { modelFile: model.localFile });
+      setEngineStarted(true);
+      onNotify(info.fallbackReason ?? `Local ${info.backend.toUpperCase()} engine is ready (${info.gpuLayers === -1 ? "maximum safe GPU offload" : `${info.gpuLayers} GPU layers`}, ${info.contextSize}-token context).`);
+    } catch (error) {
+      onNotify(`Could not start the local engine: ${String(error)}`);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const createSessionForMessage = async () => {
+    if (activeSessionId) return { id: activeSessionId, isNew: false };
+    const session = await invoke<SessionSummary>("create_session", { modelId: model.repoId });
+    setActiveSessionId(session.id);
+    setActiveSessionModelId(session.modelId);
+    return { id: session.id, isNew: true };
+  };
+
+  const renameSession = async (session: SessionSummary) => {
+    const title = window.prompt("Rename chat", session.title);
+    if (!title?.trim()) return;
+    try {
+      await invoke("rename_session", { sessionId: session.id, title });
+      await refreshSessions();
+    } catch (error) { onNotify(`Could not rename chat: ${String(error)}`); }
+  };
+
+  const deleteSession = async (session: SessionSummary) => {
+    if (!window.confirm(`Delete "${session.title}"? This cannot be undone.`)) return;
+    try {
+      await invoke("delete_session", { sessionId: session.id });
+      if (session.id === activeSessionId) {
+        setActiveSessionId(null);
+        setActiveSessionModelId(undefined);
+        setMessages([]);
+      }
+      await refreshSessions();
+    } catch (error) { onNotify(`Could not delete chat: ${String(error)}`); }
+  };
+
+  const startNewChat = () => {
+    if (streaming) return;
+    setActiveSessionId(null);
+    setActiveSessionModelId(undefined);
+    setMessages([]);
+    setDraft("");
+  };
+
+  const sendMessage = async () => {
+    const content = draft.trim();
+    if (!content || !engineStarted || streaming) return;
+    if (activeSessionModelId && activeSessionModelId !== model.repoId) {
+      onNotify(`This saved chat requires ${activeSessionModelId}. Change model before continuing.`);
+      return;
+    }
+    let session: { id: string; isNew: boolean };
+    try {
+      session = await createSessionForMessage();
+    } catch (error) {
+      onNotify(`Could not create saved chat: ${String(error)}`);
+      return;
+    }
+    const userMessage: ConversationMessage = { role: "user", content };
+    const requestMessages = [...messages, userMessage];
+    setDraft("");
+    setMessages([...requestMessages, { role: "assistant", content: "", process: ["Preparing local response"] }]);
+    setStreaming(true);
+    pendingDelta.current = "";
+    const controller = new AbortController();
+    streamAbort.current = controller;
+    try {
+      const result = await streamLocalChat({
+        messages: requestMessages,
+        sessionId: session.id,
+        signal: controller.signal,
+        onDelta: (delta) => {
+          pendingDelta.current += delta;
+          if (pendingAnimationFrame.current === null) pendingAnimationFrame.current = requestAnimationFrame(flushPendingDelta);
+        },
+        onTrim: (suffix) => {
+          flushPendingDelta();
+          setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant" && suffix && message.content.endsWith(suffix)
+            ? { ...message, content: message.content.slice(0, -suffix.length) }
+            : message));
+        },
+        onStatus: (status) => {
+          setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
+            ? { ...message, process: message.process?.at(-1) === status ? message.process : [...(message.process ?? []), status] }
+            : message));
+        },
+      });
+      if (result?.finishReason === "repetition_detected") {
+        onNotify("A repetitive output loop was stopped and its repeated tail was removed.");
+      }
+      await refreshSessions();
+      if (session.isNew && result?.content.trim()) {
+        void invoke("generate_session_title", { sessionId: session.id }).then(() => refreshSessions()).catch((error) => onNotify(`Could not title chat: ${String(error)}`));
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMessages((current) => current.map((message, index) => index === current.length - 1 && !message.content ? { ...message, content: "Sorry, the local engine could not complete that response." } : message));
+        onNotify(`Message failed: ${String(error)}`);
+      }
+    } finally {
+      if (pendingAnimationFrame.current !== null) cancelAnimationFrame(pendingAnimationFrame.current);
+      flushPendingDelta();
+      if (streamAbort.current === controller) streamAbort.current = null;
+      setStreaming(false);
+    }
+  };
+
+  return <section className={styles.workspace} aria-label="Chat workspace">
+    <aside className={styles.sidebar}>
+      <div className={styles.sidebarContent}>
+        <Button fullWidth size="sm" iconPrefix={<Plus />} onClick={startNewChat} disabled={streaming}>New chat</Button>
+        <section className={styles.sessionBrowser} aria-label="Saved chats">
+          <div className={styles.sessionSearch}><MagnifyingGlass aria-hidden="true" /><input value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} placeholder="Search chats" aria-label="Search saved chats" /></div>
+          <span className={styles.sidebarEyebrow}>Recents</span>
+          <div className={styles.sessionList}>
+            {!sessions.length && <p className={styles.emptySessions}>{sessionQuery ? "No chats found" : "Your saved chats will appear here"}</p>}
+            {sessions.map((session) => <div className={`${styles.sessionItem} ${activeSessionId === session.id ? styles.sessionItemActive : ""}`} key={session.id}>
+              <button className={styles.sessionOpen} onClick={() => void openSession(session.id)} disabled={streaming} aria-current={activeSessionId === session.id ? "page" : undefined}><span>{session.title}</span><small>{formatSessionTime(session.updatedAt)}</small></button>
+              <div className={styles.sessionActions}><button type="button" onClick={() => void renameSession(session)} aria-label={`Rename ${session.title}`}><PencilSimple /></button><button type="button" onClick={() => void deleteSession(session)} aria-label={`Delete ${session.title}`}><Trash /></button></div>
+            </div>)}
+          </div>
+        </section>
+      </div>
+      <Button variant="secondary" size="sm" onClick={onBack}>Change model</Button>
+    </aside>
+    <div className={styles.chatPanel}>
+      <div className={styles.transcriptRegion}>
+      <div ref={transcript} className={styles.chatTranscript} onScroll={updateScrollState} aria-live="polite" aria-busy={streaming}>
+        {!messages.length && <div className={styles.chatEmpty}><img className={styles.emptyLogo} src={logoUrl} alt="" /><h1>Your local model is ready.</h1><p>{engineStarted ? "Ask anything. Responses stay on this computer." : `${model.fileName} is verified and ready. Start the bundled engine to begin a conversation.`}</p><Button iconPrefix={<Play />} onClick={() => void startEngine()} loading={starting} disabled={engineStarted}>{engineStarted ? "Engine running" : "Start local engine"}</Button></div>}
+        {messages.map((message, index) => {
+          const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
+          return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
+            {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} streaming={isStreamingMessage} />}
+            {message.role === "assistant" ? <MarkdownMessage content={message.content} streaming={isStreamingMessage} /> : <p>{message.content}</p>}
+          </article>;
+        })}
+      </div>
+      {!isAtBottom && messages.length > 0 && <Button type="button" variant="secondary" className={styles.scrollToLatest} aria-label="Scroll to latest message" onClick={() => scrollToLatest()}><ArrowDown weight="bold" /></Button>}
+      </div>
+      <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+        <Textarea aria-label="Message the model" placeholder={engineStarted ? "Message AI Harness" : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted || streaming} rows={2} />
+        <div className={styles.composerFooter}>
+          <div className={styles.composerMeta}><Plus aria-hidden="true" /><span>{streaming ? "Generating" : engineStarted ? "Local engine" : "Engine offline"}</span></div>
+          {streaming ? <Button type="button" variant="secondary" className={styles.composerRoundAction} iconPrefix={<Stop weight="fill" />} onClick={() => streamAbort.current?.abort()} aria-label="Stop generating" /> : <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />}
+        </div>
+      </form>
+    </div>
+  </section>;
+}
+
+function MarkdownMessage({ content, streaming }: { content: string; streaming: boolean }) {
+  if (!content) return <p>{streaming ? "Thinking…" : ""}</p>;
+  return <div className={styles.markdown}>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock }}>{content}</ReactMarkdown>
+    {streaming && <span className={styles.streamingCursor} aria-label="Generating" />}
+  </div>;
+}
+
+function ThinkingSummary({ process, streaming }: { process: string[]; streaming: boolean }) {
+  if (!process.length && !streaming) return null;
+  const latest = process.at(-1) ?? "Preparing local response";
+  return <details className={styles.thinkingSummary}>
+    <summary><CaretRight aria-hidden="true" weight="bold" /><span>{latest}</span>{streaming && <i aria-label="In progress" />}</summary>
+    <div>{process.map((stage, index) => <p key={`${stage}-${index}`}>{stage}</p>)}</div>
+  </details>;
+}
+
+function CodeBlock({ children }: ComponentPropsWithoutRef<"pre">) {
+  const [copied, setCopied] = useState(false);
+  const code = Children.toArray(children).find(isValidElement<{ className?: string; children?: ReactNode }>);
+  const rawCode = textContent(code?.props.children).replace(/\n$/, "");
+  const language = code?.props.className?.match(/language-([\w+-]+)/)?.[1] ?? "text";
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(rawCode);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_600);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return <div className={styles.codeBlock}>
+    <div className={styles.codeToolbar}><span>{language}</span><button type="button" onClick={() => void copyCode()} aria-label={`Copy ${language} code`}>{copied ? <><Check weight="bold" />Copied</> : <><Copy weight="bold" />Copy</>}</button></div>
+    <pre>{children}</pre>
+  </div>;
+}
+
+function textContent(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textContent).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return textContent(node.props.children);
+  return "";
+}

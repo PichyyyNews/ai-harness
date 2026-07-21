@@ -1,0 +1,7 @@
+.badge { display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-full); font-weight: 700; line-height: 1; white-space: nowrap; }
+.sm { height: 18px; padding: 2px var(--space-2); font-size: var(--text-xs); }
+.md { height: 22px; padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
+.default { color: var(--accent); background: var(--accent-soft); }
+.success { color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.danger { color: #fff; background: var(--danger); }
