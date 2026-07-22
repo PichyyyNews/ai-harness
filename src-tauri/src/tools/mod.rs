@@ -95,20 +95,26 @@ fn parse_single_arg(args: &str) -> Option<String> {
 }
 
 pub fn tools_system_prompt() -> String {
-    r#"[Harness Native Tools Available]
-You can call local tools using the exact syntax <<TOOL: tool_name("argument")>> in your reply:
-- ask_user_choice({"question": "Title", "options": ["Opt 1", "Opt 2", "Opt 3"]}): Display an interactive choice UI card above composer input for user selection
-- search_chat_history("query"): Search past conversations and chat sessions across all user history
-- get_session_details("session_id" or "latest"): Get full message transcript of a past session
-- list_installed_models(): List local GGUF models downloaded on machine
-- search_huggingface_models("query"): Search open GGUF models on Hugging Face catalog
-- get_system_status(): Check system VRAM, free memory, GPU device, and active backend
-- list_workspace_files("subpath"): List files in workspace
-- read_workspace_file("relative_path"): Read text/code file from workspace
-- evaluate_expression("expression"): Evaluate math calculations with 100% precision
+    r#"[CRITICAL SYSTEM RULE: Harness Native Tools]
+You have access to powerful local system tools. You MUST invoke them using <<TOOL: tool_name(...)>> when appropriate:
 
-Example usage:
-If user asks for choices or open-ended directions: <<TOOL: ask_user_choice({"question": "คุณต้องการให้ดำเนินการไปในแนวทางใด?", "options": ["แนวทาง A: ค้นหาข้อมูลเพิ่ม", "แนวทาง B: สร้างไฟล์ตามโครงร่าง", "แนวทาง C: ปรับแต่งรายละเอียด"]})>>
+1. Interactive Choice Tool (MANDATORY WHEN ASKING QUESTIONS OR OFFERING OPTIONS):
+   - ask_user_choice({"question": "Title", "options": ["Opt 1", "Opt 2", "Opt 3"]})
+   CRITICAL REQUIREMENT: Whenever you need to ask the user to clarify, narrow scope, pick a category, or select from multiple options (1, 2, 3, 4), YOU MUST CALL THIS TOOL IMMEDIATELY in your response. DO NOT write plain text lists asking questions without invoking this tool.
+
+2. History & Memory Tools:
+   - search_chat_history("query"): Search past conversations and chat sessions across all user history
+   - get_session_details("session_id" or "latest"): Get full message transcript of a past session
+
+3. Hardware & Workspace Tools:
+   - get_system_status(): Check system VRAM, free memory, GPU device, and active backend
+   - list_workspace_files("subpath"): List files in workspace
+   - read_workspace_file("relative_path"): Read text/code file from workspace
+   - evaluate_expression("expression"): Evaluate math calculations with 100% precision
+
+EXACT SYNTAX EXAMPLES:
+- If asking user to pick a topic or narrow scope:
+<<TOOL: ask_user_choice({"question": "โปรดเลือกขอบเขตข้อมูลที่สนใจ:", "options": ["1. เน้นตามประเภทโมเดล (LLMs / Image / Video)", "2. เน้นตามค่ายผู้พัฒนา (OpenAI / Google / Anthropic)", "3. เน้นตามฟีเจอร์เด่น (Context Window / Multimodal)", "4. เน้นข่าวอัปเดตล่าสุด 1-2 เดือนนี้"]})>>
 "#
     .to_string()
 }

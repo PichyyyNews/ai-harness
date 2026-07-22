@@ -577,6 +577,12 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       if (session.isNew && result?.content.trim()) {
         void invoke("generate_session_title", { sessionId: session.id }).then(() => refreshSessions()).catch((error) => onNotify(`Could not title chat: ${String(error)}`));
       }
+      if (result?.content) {
+        const extracted = extractOptionsFromMessage(result.content);
+        if (extracted) {
+          setPendingChoice(extracted);
+        }
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         setMessages((current) => current.map((message, index) => index === current.length - 1 && !message.content ? { ...message, content: "Sorry, the local engine could not complete that response." } : message));
@@ -948,6 +954,32 @@ const openExternalUrl = async (url?: string) => {
     }
   }
 };
+
+function extractOptionsFromMessage(content: string): PendingChoice | null {
+  if (!content) return null;
+  const lines = content.split("\n");
+  const options: string[] = [];
+  let question = "โปรดเลือกขอบเขตหรือหัวข้อที่ต้องการ:";
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.includes("ช่วยระบุ") || trimmed.includes("รบกวน") || trimmed.includes("เลือกขอบเขต") || trimmed.includes("ต้องการทราบ") || trimmed.includes("สนใจเพิ่มเติม")) {
+      question = trimmed.replace(/^[\:\-\*]+/, "").trim();
+    }
+    const match = trimmed.match(/^(?:\d+[\.\)]|[-•*])\s*(.+)$/);
+    if (match) {
+      const optText = match[1].trim();
+      if (optText.length >= 4 && optText.length <= 140 && !optText.startsWith("http") && !optText.startsWith("[") && !optText.includes("http")) {
+        options.push(optText);
+      }
+    }
+  }
+
+  if (options.length >= 2) {
+    return { question, options };
+  }
+  return null;
+}
 
 function extractDomain(url?: string): string {
   if (!url) return "web";
