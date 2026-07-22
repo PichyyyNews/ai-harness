@@ -9,6 +9,7 @@ pub mod tools;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .manage(state::EngineState::default())
         .invoke_handler(tauri::generate_handler![
             commands::models::model_storage_path,

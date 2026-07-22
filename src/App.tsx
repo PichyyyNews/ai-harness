@@ -1,6 +1,7 @@
 import { Children, isValidElement, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openShellUrl } from "@tauri-apps/plugin-shell";
 import { ArrowDown, ArrowUp, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircleDots, Check, Code, Copy, DownloadSimple, FolderSimple, Gear, House, MagnifyingGlass, Minus, Palette, PencilSimple, Play, Plus, SidebarSimple, Square, Stop, Trash, User, UserPlus, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
@@ -916,9 +917,14 @@ function ContextDonutChart({ usedChars = 0, maxTokens = 8192 }: { usedChars?: nu
 const openExternalUrl = async (url?: string) => {
   if (!url) return;
   try {
-    await invoke("plugin:shell|open", { path: url });
-  } catch {
-    window.open(url, "_blank", "noopener,noreferrer");
+    await openShellUrl(url);
+  } catch (err) {
+    console.warn("openShellUrl failed, fallback:", err);
+    try {
+      await invoke("plugin:shell|open", { path: url });
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
   }
 };
 
@@ -969,13 +975,16 @@ function MarkdownMessage({ content, sources, streaming }: { content: string; sou
           {sources.map((source) => (
             <a
               href={source.url}
+              className={styles.citationCardBadgeItem}
               onClick={(e) => {
                 e.preventDefault();
                 void openExternalUrl(source.url);
               }}
               key={source.id}
+              title={source.title}
             >
-              [{source.id}] {source.title}
+              <span className={styles.webSourceIndex}>[{source.id}]</span>
+              <span className={styles.webSourceTitle}>{source.title}</span>
             </a>
           ))}
         </div>
@@ -988,10 +997,16 @@ function MarkdownMessage({ content, sources, streaming }: { content: string; sou
 function citationMarkdown(content: string, sources: WebSource[]) {
   if (!sources.length) return content;
   const byId = new Map(sources.map((source) => [source.id, source]));
-  return content.split(/(```[\s\S]*?```)/g).map((part) => part.startsWith("```") ? part : part.replace(/\[(\d+)\]/g, (citation, rawId) => {
-    const source = byId.get(Number(rawId));
-    return source ? `[${rawId}](<${source.url}> "${source.title.replaceAll('"', "'")}")` : citation;
-  })).join("");
+  return content
+    .split(/(```[\s\S]*?```|`[^`]+`)/g)
+    .map((part) => {
+      if (part.startsWith("```") || part.startsWith("`")) return part;
+      return part.replace(/\[(\d+)\]/g, (citation, rawId) => {
+        const source = byId.get(Number(rawId));
+        return source ? `[${rawId}](<${source.url}>)` : citation;
+      });
+    })
+    .join("");
 }
 
 function CitationLink(sources: WebSource[]) {
@@ -1002,6 +1017,8 @@ function CitationLink(sources: WebSource[]) {
       <a
         className={source ? styles.citationBadge : styles.markdownLink}
         href={targetUrl}
+        target="_blank"
+        rel="noopener noreferrer"
         onClick={(e) => {
           e.preventDefault();
           if (targetUrl) void openExternalUrl(targetUrl);
