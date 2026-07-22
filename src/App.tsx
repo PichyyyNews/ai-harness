@@ -820,7 +820,7 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
         <div className={styles.composerFooter}>
           <div className={styles.composerMeta}>
             <Plus aria-hidden="true" />
-            {streaming ? <TextShimmerWave text="Generating response..." /> : <span>{engineStarted ? "Local engine" : "Engine offline"}</span>}
+            <span>{streaming ? "Generating" : engineStarted ? "Local engine" : "Engine offline"}</span>
             {promptQueue.length > 0 && <span className={styles.queueCountBadge}>{promptQueue.length} queued</span>}
           </div>
           <div className={styles.composerRightActions}>
