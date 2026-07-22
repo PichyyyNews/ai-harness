@@ -29,6 +29,11 @@ struct CrawlResponse {
     results: Vec<CrawlResultItem>,
 }
 
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static SPAWN_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
 /// Checks whether the local Crawl4AI sidecar service is alive and healthy.
 pub fn is_service_healthy() -> bool {
     let client = match reqwest::blocking::Client::builder()
@@ -45,6 +50,40 @@ pub fn is_service_healthy() -> bool {
         .is_ok_and(|res| res.status().is_success())
 }
 
+/// Automatically spawns the Python Crawl4AI sidecar service if not already running.
+pub fn ensure_sidecar_running() -> bool {
+    if is_service_healthy() {
+        return true;
+    }
+
+    if SPAWN_ATTEMPTED.swap(true, Ordering::Relaxed) {
+        return is_service_healthy();
+    }
+
+    let script_path = std::env::current_dir()
+        .map(|mut p| {
+            p.push("sidecars");
+            p.push("crawl4ai_service");
+            p.push("main.py");
+            p
+        })
+        .ok();
+
+    if let Some(path) = script_path {
+        if path.exists() {
+            let _ = Command::new("python")
+                .arg(&path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+
+            std::thread::sleep(Duration::from_millis(1200));
+        }
+    }
+
+    is_service_healthy()
+}
+
 /// Attempts to enrich search results using the Crawl4AI REST service.
 /// If the service is unavailable or fails, returns `None` to allow fallback.
 pub fn enrich_with_crawl4ai(results: &[SearchResult]) -> Option<Vec<SearchResult>> {
@@ -52,7 +91,7 @@ pub fn enrich_with_crawl4ai(results: &[SearchResult]) -> Option<Vec<SearchResult
         return Some(vec![]);
     }
 
-    if !is_service_healthy() {
+    if !ensure_sidecar_running() {
         return None;
     }
 
