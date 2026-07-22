@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import logoUrl from "../logo.svg";
-import { Badge, Button, Card, Textarea, TextShimmerWave, Toast } from "./components";
+import { Badge, Button, Card, MorphingInfinity, Textarea, TextShimmerWave, Toast } from "./components";
 import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
 import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
 import styles from "./App.module.css";
@@ -938,7 +938,7 @@ function GlobeIcon({ domain }: { domain: string }) {
 }
 
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
-  if (!content) return <p>{streaming ? <TextShimmerWave text="Thinking…" /> : ""}</p>;
+  if (!content) return <p>{streaming ? <MorphingInfinity label="Thinking…" /> : ""}</p>;
   return (
     <div className={styles.markdown}>
       <ReactMarkdown
