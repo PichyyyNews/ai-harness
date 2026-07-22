@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import logoUrl from "../logo.svg";
-import { Badge, Button, Card, Textarea, Toast } from "./components";
+import { Badge, Button, Card, Textarea, TextShimmerWave, Toast } from "./components";
 import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
 import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
 import styles from "./App.module.css";
@@ -780,7 +780,7 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
         <Textarea aria-label="Message the model" placeholder={engineStarted ? "Message AI Harness" : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted} rows={2} />
         <div className={styles.composerFooter}>
-          <div className={styles.composerMeta}><Plus aria-hidden="true" /><span>{streaming ? "Generating" : engineStarted ? "Local engine" : "Engine offline"}</span></div>
+          <div className={styles.composerMeta}><Plus aria-hidden="true" />{streaming ? <TextShimmerWave text="Generating response..." /> : <span>{engineStarted ? "Local engine" : "Engine offline"}</span>}</div>
           <div className={styles.composerRightActions}>
             <ContextDonutChart usedChars={usedChars} maxTokens={maxContextTokens} />
             {streaming ? <Button type="button" variant="secondary" className={styles.composerRoundAction} iconPrefix={<Stop weight="fill" />} onClick={() => streamAbort.current?.abort()} aria-label="Stop generating" /> : <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />}
@@ -873,7 +873,7 @@ function GlobeIcon({ domain }: { domain: string }) {
 }
 
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
-  if (!content) return <p>{streaming ? "Thinking…" : ""}</p>;
+  if (!content) return <p>{streaming ? <TextShimmerWave text="Thinking…" /> : ""}</p>;
   return (
     <div className={styles.markdown}>
       <ReactMarkdown
@@ -976,7 +976,7 @@ function ThinkingSummary({ process, retrievalTrace, sources, streaming }: { proc
                 <span className={styles.treeConnector}>└─</span>
                 <div className={styles.treeDoneBadge}>
                   <Check size={14} weight="bold" />
-                  <span>{streaming ? "Running..." : "Done"}</span>
+                  <span>{streaming ? <TextShimmerWave text="Running..." /> : "Done"}</span>
                 </div>
               </div>
             </div>
