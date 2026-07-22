@@ -431,9 +431,17 @@ pub async fn generate_chat(
                         },
                     );
                 }
+                }
             }
         }
-        }
+        request.messages.insert(
+            0,
+            engine::ChatMessage {
+                role: "system".to_string(),
+                content: crate::tools::tools_system_prompt(),
+                created_at: None,
+            },
+        );
         let original_generation_request = request.clone();
         let web_debug_app = worker_app.clone();
         let web_debug_session_id = session_id.clone();
@@ -468,6 +476,62 @@ pub async fn generate_chat(
             },
             || state.cancel_generation.load(Ordering::SeqCst),
         )?;
+
+        if let Some(start) = result.content.find("<<TOOL:") {
+            if let Some(end) = result.content[start..].find(">>") {
+                let marker = &result.content[start + 7..start + end].trim();
+                let (tool_name, args) = if let Some(paren) = marker.find('(') {
+                    let name = marker[..paren].trim();
+                    let rest = marker[paren + 1..].trim_end_matches(')').trim();
+                    (name, rest)
+                } else {
+                    (marker.as_ref(), "")
+                };
+
+                let _ = worker_app.emit(
+                    "engine-status",
+                    StatusEvent {
+                        status: format!("Executing Harness Tool: {tool_name}"),
+                    },
+                );
+
+                if let Ok(tool_output) = crate::tools::execute_tool(&worker_app, tool_name, args) {
+                    let _ = worker_app.emit(
+                        "engine-trim",
+                        TrimEvent {
+                            suffix: result.content.clone(),
+                        },
+                    );
+
+                    let mut tool_request = original_generation_request.clone();
+                    tool_request.messages.push(engine::ChatMessage {
+                        role: "system".to_string(),
+                        content: format!("[Tool Executed: {tool_name}]\nTool Result:\n{tool_output}"),
+                        created_at: None,
+                    });
+
+                    result = engine::context_manager::generate_with_recovery(
+                        engine,
+                        tool_request,
+                        &mut memory,
+                        &time_context,
+                        |event| match event {
+                            GenerationEvent::Token(token) => worker_app
+                                .emit("engine-token", TokenEvent { token })
+                                .map_err(|error| format!("Could not stream token: {error}")),
+                            GenerationEvent::TrimSuffix(suffix) => worker_app
+                                .emit("engine-trim", TrimEvent { suffix })
+                                .map_err(|error| format!("Could not trim suffix: {error}")),
+                            GenerationEvent::Status(status) => worker_app
+                                .emit("engine-status", StatusEvent { status })
+                                .map_err(|error| format!("Could not send status: {error}")),
+                        },
+                        |_| {},
+                        || state.cancel_generation.load(Ordering::SeqCst),
+                    )?;
+                }
+            }
+        }
         let violations = engine::memory::constraint_guard::violations(
             engine.endpoint(),
             &result.content,

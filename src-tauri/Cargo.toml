@@ -26,5 +26,7 @@ sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["fs", "io-util"] }
 url = "2.5"
+urlencoding = "2.1"
 uuid = { version = "1", features = ["v4"] }
 zip = "2.4.2"
+meval = "0.2"
