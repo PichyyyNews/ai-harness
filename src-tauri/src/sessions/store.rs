@@ -492,6 +492,83 @@ fn truncate(value: &str, max_chars: usize) -> String {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CrossSessionMatch {
+    pub session_title: String,
+    pub user_content: String,
+    pub assistant_content: Option<String>,
+    pub created_at: String,
+}
+
+pub fn search_cross_session_messages(
+    app: &AppHandle,
+    current_session_id: &str,
+    query: &str,
+    limit: usize,
+) -> Vec<CrossSessionMatch> {
+    let connection = match open(app) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let clean_query = query.trim();
+    let tokens: Vec<String> = clean_query
+        .split_whitespace()
+        .filter(|t| t.chars().count() >= 2)
+        .map(|t| t.to_lowercase())
+        .collect();
+
+    let sql = "SELECT m.content, m.created_at, s.title,
+                (SELECT m2.content FROM messages m2 WHERE m2.session_id = m.session_id AND m2.sequence > m.sequence AND m2.role = 'assistant' ORDER BY m2.sequence ASC LIMIT 1) as assistant_reply
+               FROM messages m
+               JOIN sessions s ON s.id = m.session_id
+               WHERE m.session_id != ?1 AND m.role = 'user'
+               ORDER BY m.created_at DESC LIMIT 50";
+
+    let mut stmt = match connection.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let rows = stmt.query_map(params![current_session_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    });
+
+    let mut matches = Vec::new();
+    if let Ok(iter) = rows {
+        for item in iter.flatten() {
+            let (user_text, created_at, session_title, assistant_reply) = item;
+            let text_lower = user_text.to_lowercase();
+
+            let score = if tokens.is_empty() {
+                1
+            } else {
+                tokens.iter().filter(|t| text_lower.contains(*t)).count()
+            };
+
+            if score > 0 {
+                matches.push((
+                    score,
+                    CrossSessionMatch {
+                        session_title,
+                        user_content: user_text,
+                        assistant_content: assistant_reply,
+                        created_at,
+                    },
+                ));
+            }
+        }
+    }
+
+    matches.sort_by(|a, b| b.0.cmp(&a.0));
+    matches.into_iter().take(limit).map(|m| m.1).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::migrate;

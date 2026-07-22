@@ -389,11 +389,11 @@ pub async fn generate_chat(
         }
         let mut active_constraints = Vec::new();
         if state.memory_injection_enabled.load(Ordering::SeqCst) {
-        if let Some(session_id) = &session_id {
+            let session_ref = session_id.as_deref().unwrap_or("default");
             if let Some(message) = &pending_user {
                 let memory_prompts = engine::memory::assemble_tiered_memory_prompts(
                     &worker_app,
-                    session_id,
+                    session_ref,
                     &message.content,
                     embedding_endpoint.as_deref(),
                 );
@@ -420,7 +420,7 @@ pub async fn generate_chat(
                 };
                 engine::memory::observability::log_prompt_assembly(
                     &worker_app,
-                    session_id,
+                    session_ref,
                     memory_prompts.layer_counts,
                     primary_tokens,
                     reminder_tokens,
@@ -451,7 +451,6 @@ pub async fn generate_chat(
                             created_at: None,
                         },
                     );
-                }
                 }
             }
         }

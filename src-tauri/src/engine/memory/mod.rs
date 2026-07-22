@@ -63,7 +63,23 @@ pub fn assemble_tiered_memory_prompts(
 
     // Constraints and durable communication preferences stay nearest the top
     // of the protected block; mid-term project detail is lower priority.
-    let primary = compose_primary_prompt(short_term, long_term, mid_term);
+    // 4. Cross-Session History RAG (Search messages across past sessions)
+    let cross_matches = store::search_cross_session_messages(app, session_id, current_user_message, 4);
+    let cross_session_prompt = if !cross_matches.is_empty() {
+        let mut lines = vec!["[Relevant Past Conversations Across Sessions]".to_string()];
+        for m in cross_matches {
+            lines.push(format!("- Session \"{}\": User asked: \"{}\"", m.session_title, m.user_content));
+            if let Some(reply) = m.assistant_content {
+                let snippet = reply.chars().take(200).collect::<String>();
+                lines.push(format!("  Assistant replied: \"{snippet}\""));
+            }
+        }
+        Some(lines.join("\n"))
+    } else {
+        None
+    };
+
+    let primary = compose_primary_prompt(short_term, long_term, mid_term, cross_session_prompt);
     let mut enforced_constraints = active_constraints.clone();
     for preference in durable_preferences {
         if !enforced_constraints.contains(&preference) {
@@ -89,15 +105,16 @@ fn compose_primary_prompt(
     short_term: Option<String>,
     long_term: Option<String>,
     mid_term: Option<String>,
+    cross_session: Option<String>,
 ) -> Option<String> {
-    let body = [short_term, long_term, mid_term]
+    let body = [short_term, long_term, mid_term, cross_session]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join("\n\n");
     (!body.trim().is_empty()).then(|| {
         format!(
-            "[Memory Directives]\nActive rules, preferences, and context retrieved from local memory:\n{body}"
+            "[Memory Directives & Personalization Context]\nActive user profile, preferences, and relevant past history retrieved from local database:\n{body}"
         )
     })
 }
@@ -108,15 +125,16 @@ mod tests {
 
     #[test]
     fn enabled_memory_changes_the_prompt_and_prioritizes_constraints() {
-        let without_memory = compose_primary_prompt(None, None, None);
+        let without_memory = compose_primary_prompt(None, None, None, None);
         let with_memory = compose_primary_prompt(
             Some("Active constraints: answer in Thai".to_string()),
             Some("Communication style: no emoji".to_string()),
             Some("Goal: finish the memory pipeline".to_string()),
+            None,
         )
         .expect("memory prompt");
         assert!(without_memory.is_none());
-        assert!(with_memory.starts_with("[Memory Directives]"));
+        assert!(with_memory.starts_with("[Memory Directives"));
         assert!(with_memory.find("answer in Thai") < with_memory.find("Goal:"));
     }
 }
