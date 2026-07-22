@@ -1,52 +1,53 @@
-.infinityWrapper {
+.container {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2, 8px);
-  font-size: var(--text-sm, 13px);
-  font-weight: 500;
-  color: var(--text-secondary, #94a3b8);
+  gap: 8px;
   user-select: none;
 }
 
-.infinitySvg {
-  width: 26px;
-  height: 14px;
+.svg {
   overflow: visible;
 }
 
-.infinityPathBg {
-  stroke: color-mix(in srgb, var(--accent, #3b82f6) 20%, transparent);
-  stroke-width: 2.2;
+.glowTrack {
+  stroke: color-mix(in srgb, var(--accent, #3b82f6) 25%, transparent);
+  stroke-width: 2.5;
   fill: none;
 }
 
-.infinityPath {
-  stroke-width: 2.5;
+.morphPath {
+  stroke-width: 3;
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-dasharray: 60 40;
-  animation: infinityMorph 2s ease-in-out infinite;
+  stroke-dasharray: 45 35;
+  animation: morphInfinity 1.8s ease-in-out infinite;
 }
 
-@keyframes infinityMorph {
+@keyframes morphInfinity {
   0% {
-    stroke-dashoffset: 100;
-    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent, #3b82f6) 60%, transparent));
+    stroke-dashoffset: 80;
+    transform: scale(0.96);
+    transform-origin: center;
+    filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.4));
   }
   50% {
     stroke-dashoffset: 0;
-    filter: drop-shadow(0 0 6px var(--accent, #3b82f6));
+    transform: scale(1.04);
+    transform-origin: center;
+    filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.8));
   }
   100% {
-    stroke-dashoffset: -100;
-    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent, #3b82f6) 60%, transparent));
+    stroke-dashoffset: -80;
+    transform: scale(0.96);
+    transform-origin: center;
+    filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.4));
   }
 }
 
-.thinkingLabel {
+.label {
   font-size: var(--text-xs, 12px);
-  letter-spacing: -0.01em;
   color: var(--text-secondary, #94a3b8);
   font-weight: 500;
+  letter-spacing: -0.01em;
 }

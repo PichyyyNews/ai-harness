@@ -3,40 +3,46 @@ import styles from "./MorphingInfinity.module.css";
 interface MorphingInfinityProps {
   label?: string;
   className?: string;
+  size?: number;
 }
 
-export function MorphingInfinity({ label = "Thinking…", className = "" }: MorphingInfinityProps) {
+export function MorphingInfinity({
+  label = "Thinking…",
+  className = "",
+  size = 24,
+}: MorphingInfinityProps) {
   return (
-    <span className={`${styles.infinityWrapper} ${className}`} aria-label={label}>
+    <span className={`${styles.container} ${className}`} aria-label={label || "Thinking"}>
       <svg
-        className={styles.infinitySvg}
-        viewBox="0 0 36 18"
+        width={size}
+        height={Math.round(size / 2)}
+        viewBox="0 0 48 24"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
+        className={styles.svg}
       >
         <defs>
-          <linearGradient id="infinityGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+          <linearGradient id="morphingInfinityGrad" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="var(--accent, #3b82f6)" />
-            <stop offset="50%" stopColor="#8b5cf6" />
-            <stop offset="100%" stopColor="var(--accent, #3b82f6)" />
+            <stop offset="50%" stopColor="#a855f7" />
+            <stop offset="100%" stopColor="#ec4899" />
           </linearGradient>
         </defs>
 
-        {/* Background track */}
+        {/* Glow backdrop track */}
         <path
-          d="M 9,9 C 3,3 3,15 9,9 C 15,3 21,3 27,9 C 33,15 33,3 27,9 C 21,15 15,15 9,9 Z"
-          className={styles.infinityPathBg}
+          d="M 12 12 C 4 4, 4 20, 12 12 C 20 4, 28 4, 36 12 C 44 20, 44 4, 36 12 C 28 20, 20 20, 12 12 Z"
+          className={styles.glowTrack}
         />
 
         {/* Morphing animated stroke */}
         <path
-          d="M 9,9 C 3,3 3,15 9,9 C 15,3 21,3 27,9 C 33,15 33,3 27,9 C 21,15 15,15 9,9 Z"
-          stroke="url(#infinityGradient)"
-          className={styles.infinityPath}
+          d="M 12 12 C 4 4, 4 20, 12 12 C 20 4, 28 4, 36 12 C 44 20, 44 4, 36 12 C 28 20, 20 20, 12 12 Z"
+          stroke="url(#morphingInfinityGrad)"
+          className={styles.morphPath}
         />
       </svg>
-
-      {label && <span className={styles.thinkingLabel}>{label}</span>}
+      {label && <span className={styles.label}>{label}</span>}
     </span>
   );
 }
