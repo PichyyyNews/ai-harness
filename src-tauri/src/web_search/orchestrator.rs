@@ -1,5 +1,5 @@
 use super::{
-    bm25, planner, source_router, worker_runtime, Confidence, EvidenceQuality, Grounding,
+    bm25, planner, reasoning_loop, source_router, worker_runtime, Confidence, EvidenceQuality, Grounding,
     QueryPlan, RawEvidence, RetrievalTraceEntry, RetrievalTraceRecorder, SubQuestion,
     SubQuestionResult, WebSource,
 };
@@ -34,6 +34,7 @@ pub fn run_adaptive_pipeline(
         planner::choose_providers(endpoint, &plan)
     };
 
+    let plan_original_query = plan.original_query.clone();
     for (index, mut sub_q) in plan.sub_questions.into_iter().enumerate() {
         let planned = planned_providers
             .as_ref()
@@ -96,6 +97,46 @@ pub fn run_adaptive_pipeline(
             confidence: final_confidence,
             quality,
         });
+    }
+
+    // --- Multi-Pass Reasoning Loop ---
+    let pass_result = reasoning_loop::evaluate_pass(1, &sub_results, &plan_original_query);
+    reasoning_loop::record_pass_trace(&trace, &pass_result);
+    status(pass_result.status_message.clone());
+
+    // If the reasoning loop recommends a secondary search, execute it
+    if let reasoning_loop::ReasoningAction::RefineSearch { refined_queries, .. } = &pass_result.action {
+        status("Pass 2: Running targeted secondary search batch to fill evidence gaps".to_string());
+        for query_text in refined_queries {
+            let refined_sub_q = SubQuestion {
+                id: uuid::Uuid::new_v4(),
+                text: query_text.clone(),
+                source_hint: super::SourceHint::GeneralWeb,
+                depends_on: None,
+            };
+            let providers = source_router::candidates(&refined_sub_q.text, &refined_sub_q.source_hint);
+            let evidence2 = retrieve_for(
+                app, &refined_sub_q, &providers, embedding_endpoint, &trace, &mut status,
+            );
+            let confidence2 = judge_sufficiency(&refined_sub_q, &evidence2, embedding_endpoint);
+            let quality2 = if confidence2.combined < WEAK_THRESHOLD {
+                EvidenceQuality::Weak
+            } else if confidence2.combined < REFINEMENT_THRESHOLD {
+                EvidenceQuality::Adequate
+            } else {
+                EvidenceQuality::Strong
+            };
+            sub_results.push(SubQuestionResult {
+                sub_q: refined_sub_q,
+                evidence: evidence2,
+                confidence: confidence2,
+                quality: quality2,
+            });
+        }
+        // Re-evaluate after secondary pass
+        let pass2_result = reasoning_loop::evaluate_pass(2, &sub_results, &plan_original_query);
+        reasoning_loop::record_pass_trace(&trace, &pass2_result);
+        status(pass2_result.status_message);
     }
 
     if sub_results.iter().all(|r| r.evidence.chunks.is_empty()) {

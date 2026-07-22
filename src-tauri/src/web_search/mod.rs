@@ -9,6 +9,7 @@ pub mod observability;
 pub mod orchestrator;
 pub mod planner;
 pub mod query;
+pub mod reasoning_loop;
 pub mod scraper;
 pub mod searxng;
 pub mod source_router;

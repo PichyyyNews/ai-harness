@@ -115,12 +115,12 @@ impl TimeContext {
             format!("\n- Network-to-system clock difference at calibration: {delta:+} seconds")
         }).unwrap_or_default();
         format!(
-            "[System Temporal Context - authoritative]\n- Current local date: {}\n- Current local time: {} ({})\n- Time zone: {} (UTC{})\n- Local ISO-8601 reference: {}\n- Current UTC reference: {}\n- Time source: {}{}\nUse this live system context for questions about dates, times, and relative words such as today or tomorrow. Do not expose IP-derived location details and do not claim a different current time unless the user provides one.",
+            "[Current Temporal Anchor & Live System Clock - authoritative]\n- Current local date: {} ({})\n- Current local time: {} (UTC{})\n- Time zone: {}\n- ISO-8601: {}\n- UTC reference: {}\n- Time source: {}{}\n[Recency Requirement] All references to \"today\", \"now\", \"latest\", \"recent\", \"this year\", or \"current events\" MUST be interpreted relative to the date above. When Crawl4AI search evidence is provided below, prioritize it as the authoritative factual source. Do not claim your knowledge is outdated or that you lack real-time access when live evidence is present. Do not expose IP-derived location details.",
             self.date_human,
-            self.time_human,
             self.day_of_week,
-            timezone,
+            self.time_human,
             self.timezone_offset,
+            timezone,
             self.iso_8601_local,
             self.utc_timestamp,
             self.source.description(),
@@ -317,6 +317,7 @@ mod tests {
         let value = offset.with_ymd_and_hms(2026, 7, 21, 20, 0, 0).single().expect("valid date");
         let context = TimeContext::from_fixed_offset(value, TimeSource::NetworkLocation, Some("Asia/Bangkok".to_string()), Some(2));
         let header = context.to_system_prompt_header();
+        assert!(header.contains("[Current Temporal Anchor"));
         assert!(header.contains("network time calibrated"));
         assert!(header.contains("Asia/Bangkok"));
         assert!(!header.contains("latitude"));

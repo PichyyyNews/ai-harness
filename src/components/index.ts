@@ -1,6 +1,7 @@
 export * from "./Badge";
 export * from "./Button";
 export * from "./Card";
+export * from "./InteractiveChoiceBox";
 export * from "./MorphingInfinity";
 export * from "./Skeleton";
 export * from "./Textarea";

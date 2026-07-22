@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import logoUrl from "../logo.svg";
-import { Badge, Button, Card, MorphingInfinity, Textarea, TextShimmerWave, Toast } from "./components";
+import { Badge, Button, Card, InteractiveChoiceBox, MorphingInfinity, Textarea, TextShimmerWave, Toast } from "./components";
 import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
 import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
 import styles from "./App.module.css";
@@ -19,6 +19,7 @@ type Screen = "picker" | "chat";
 type MenuName = "File" | "Edit" | "View" | "Help";
 type WindowAction = "minimize" | "maximize" | "close";
 type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[]; retrievalTrace?: RetrievalTraceEntry[]; isQueued?: boolean };
+interface PendingChoice { question: string; options: string[]; }
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return "Size unavailable";
@@ -347,6 +348,14 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const pendingDelta = useRef("");
   const pendingAnimationFrame = useRef<number | null>(null);
   const [promptQueue, setPromptQueue] = useState<string[]>([]);
+  const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
+
+  useEffect(() => {
+    const unlisten = listen<PendingChoice>("ai-choice-request", (event) => {
+      setPendingChoice(event.payload);
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, []);
   const promptQueueRef = useRef<string[]>([]);
 
   const refreshSessions = useCallback(async (query = sessionQuery) => {
@@ -819,6 +828,18 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       </div>
       {!isAtBottom && messages.length > 0 && <Button type="button" variant="secondary" className={styles.scrollToLatest} aria-label="Scroll to latest message" onClick={() => scrollToLatest()}><ArrowDown weight="bold" /></Button>}
       </div>
+        {pendingChoice && (
+          <InteractiveChoiceBox
+            question={pendingChoice.question}
+            options={pendingChoice.options}
+            onSubmit={(answer) => {
+              setPendingChoice(null);
+              setDraft(answer);
+              void sendMessage();
+            }}
+            onDismiss={() => setPendingChoice(null)}
+          />
+        )}
       <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
         <Textarea aria-label="Message the model" placeholder={engineStarted ? (streaming ? "Type next prompt to queue..." : "Message AI Harness") : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted} rows={2} />
         <div className={styles.composerFooter}>
