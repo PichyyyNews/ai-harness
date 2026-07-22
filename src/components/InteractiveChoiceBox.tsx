@@ -5,11 +5,12 @@ import styles from "./InteractiveChoiceBox.module.css";
 export interface InteractiveChoiceBoxProps {
   question: string;
   options: string[];
+  disabled?: boolean;
   onSubmit: (answer: string) => void;
   onDismiss?: () => void;
 }
 
-export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }: InteractiveChoiceBoxProps) {
+export function InteractiveChoiceBox({ question, options, disabled = false, onSubmit, onDismiss }: InteractiveChoiceBoxProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [customText, setCustomText] = useState("");
   const isCustom = selectedIndex === -1;
@@ -42,6 +43,7 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
             type="button"
             className={`${styles.choiceOption} ${selectedIndex === index ? styles.choiceOptionSelected : ""}`}
             onClick={() => handleOptionClick(option, index)}
+            disabled={disabled}
           >
             <div className={`${styles.choiceRadio} ${selectedIndex === index ? styles.choiceRadioSelected : ""}`}>
               {selectedIndex === index && <div className={styles.choiceRadioDot} />}
@@ -55,6 +57,7 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
           type="button"
           className={`${styles.choiceOption} ${isCustom ? styles.choiceOptionSelected : ""}`}
           onClick={() => setSelectedIndex(-1)}
+          disabled={disabled}
         >
           <div className={`${styles.choiceRadio} ${isCustom ? styles.choiceRadioSelected : ""}`}>
             {isCustom && <div className={styles.choiceRadioDot} />}
@@ -68,6 +71,7 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
             placeholder="Type your custom response here…"
             value={customText}
             onChange={(e) => setCustomText(e.target.value)}
+            disabled={disabled}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -90,7 +94,7 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
           <button
             type="button"
             className={styles.choiceSubmit}
-            disabled={!customText.trim()}
+            disabled={disabled || !customText.trim()}
             onClick={handleCustomSubmit}
           >
             <ArrowUp size={12} weight="bold" />

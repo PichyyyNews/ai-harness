@@ -166,6 +166,7 @@ pub async fn generate_chat(
 ) -> Result<GenerationResult, String> {
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let is_choice_selection = request.choice_selection;
         let session_id = request.session_id.clone();
         let pending_user = request
             .messages
@@ -224,6 +225,76 @@ pub async fn generate_chat(
                     created_at: Some(message.created_at),
                 })
                 .collect();
+        }
+        let mut routed_tool_result = None;
+        if let Some(message) = &pending_user {
+            let routing_context = request
+                .messages
+                .iter()
+                .rev()
+                .filter(|entry| entry.role == "user" || entry.role == "assistant")
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|entry| format!("{}: {}", entry.role, entry.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            match crate::tools::planner::decide(engine.endpoint(), &routing_context) {
+                crate::tools::planner::ToolRoute::Answer => {}
+                crate::tools::planner::ToolRoute::CallTool { name, arguments } => {
+                    let _ = worker_app.emit(
+                        "engine-status",
+                        StatusEvent {
+                            status: format!("Executing Harness Tool: {name}"),
+                        },
+                    );
+                    match crate::tools::execute_tool(&worker_app, &name, &arguments.to_string()) {
+                        Ok(output) => routed_tool_result = Some((name, output)),
+                        Err(error) => eprintln!("[tool-router] {name} failed: {error}"),
+                    }
+                }
+                crate::tools::planner::ToolRoute::AskUserChoice {
+                    question,
+                    options,
+                    reason,
+                } if !is_choice_selection => {
+                    let choice_args = serde_json::json!({
+                        "question": question,
+                        "options": options,
+                        "reason": reason,
+                    });
+                    let output = crate::tools::execute_tool(
+                        &worker_app,
+                        "ask_user_choice",
+                        &choice_args.to_string(),
+                    )?;
+                    if output.starts_with("[choice-pending]") {
+                        let result = GenerationResult {
+                            content: "โปรดเลือกหนึ่งตัวเลือกด้านบนเพื่อดำเนินการต่อ".to_string(),
+                            finish_reason: FinishReason::Stop,
+                            sources: Vec::new(),
+                            retrieval_trace: Vec::new(),
+                        };
+                        if let Some(session_id) = &session_id {
+                            sessions::store::append_message(
+                                &worker_app,
+                                session_id,
+                                "assistant",
+                                &result.content,
+                                None,
+                                Some(finish_reason_name(&result.finish_reason)),
+                                Some(&result.sources),
+                                Some(&result.retrieval_trace),
+                            )?;
+                            sessions::store::set_memory(&worker_app, session_id, memory.summary())?;
+                        }
+                        return Ok(result);
+                    }
+                }
+                crate::tools::planner::ToolRoute::AskUserChoice { .. } => {}
+            }
+            let _ = message;
         }
         let tier0_analysis = pending_user.as_ref().and_then(|message| {
             let runtime = state.embedding_runtime.lock().ok()?;
@@ -387,6 +458,34 @@ pub async fn generate_chat(
                 );
             }
         }
+        if let Some((tool_name, tool_output)) = routed_tool_result {
+            request.messages.insert(
+                0,
+                engine::ChatMessage {
+                    role: "system".to_string(),
+                    content: format!(
+                        "[Harness Native Tool Result: {tool_name}]\n{}",
+                        tool_output
+                    ),
+                    created_at: None,
+                },
+            );
+        }
+        if is_choice_selection {
+            let current_user_index = request
+                .messages
+                .iter()
+                .rposition(|item| item.role == "user")
+                .unwrap_or(request.messages.len());
+            request.messages.insert(
+                current_user_index,
+                engine::ChatMessage {
+                    role: "system".to_string(),
+                    content: "The latest user message is their selection from the immediately preceding native Choice UI. Continue the original request using that selection. Do not ask another choice or scope question; make any remaining reasonable assumption and give the answer.".to_string(),
+                    created_at: None,
+                },
+            );
+        }
         let mut active_constraints = Vec::new();
         if state.memory_injection_enabled.load(Ordering::SeqCst) {
             let session_ref = session_id.as_deref().unwrap_or("default");
@@ -454,8 +553,17 @@ pub async fn generate_chat(
                 }
             }
         }
+        // Keep tool use immediately beside the latest user message. The
+        // durable memory prompt can be much larger, and small local models
+        // otherwise follow its "guide the user" instruction by writing a
+        // plain list instead of invoking the available Choice tool.
+        let current_user_index = request
+            .messages
+            .iter()
+            .rposition(|item| item.role == "user")
+            .unwrap_or(request.messages.len());
         request.messages.insert(
-            0,
+            current_user_index,
             engine::ChatMessage {
                 role: "system".to_string(),
                 content: crate::tools::tools_system_prompt(),
@@ -497,67 +605,51 @@ pub async fn generate_chat(
             || state.cancel_generation.load(Ordering::SeqCst),
         )?;
 
-        if let Some(start) = result.content.find("<<TOOL:") {
-            if let Some(end) = result.content[start..].find(">>") {
-                let marker = &result.content[start + 7..start + end].trim();
-                let (tool_name, args) = if let Some(paren) = marker.find('(') {
-                    let name = marker[..paren].trim();
-                    let rest = marker[paren + 1..].trim_end_matches(')').trim();
-                    (name, rest)
-                } else {
-                    (marker.as_ref(), "")
-                };
-
-                let _ = worker_app.emit(
-                    "engine-status",
-                    StatusEvent {
-                        status: format!("Executing Harness Tool: {tool_name}"),
-                    },
-                );
-
-                if let Ok(tool_output) = crate::tools::execute_tool(&worker_app, tool_name, args) {
-                    let _ = worker_app.emit(
-                        "engine-trim",
-                        TrimEvent {
-                            suffix: result.content.clone(),
-                        },
-                    );
-
-                    let mut tool_request = original_generation_request.clone();
-                    tool_request.messages.push(engine::ChatMessage {
-                        role: "system".to_string(),
-                        content: format!("[Tool Executed: {tool_name}]\nTool Result:\n{tool_output}"),
-                        created_at: None,
-                    });
-
-                    result = engine::context_manager::generate_with_recovery(
-                        engine,
-                        tool_request,
-                        &mut memory,
-                        &time_context,
-                        |event| match event {
-                            GenerationEvent::Token(token) => worker_app
-                                .emit("engine-token", TokenEvent { token })
-                                .map_err(|error| format!("Could not stream token: {error}")),
-                            GenerationEvent::TrimSuffix(suffix) => worker_app
-                                .emit("engine-trim", TrimEvent { suffix })
-                                .map_err(|error| format!("Could not trim suffix: {error}")),
-                            GenerationEvent::Status(status) => worker_app
-                                .emit("engine-status", StatusEvent { status })
-                                .map_err(|error| format!("Could not send status: {error}")),
-                        },
-                        |_| {},
-                        || state.cancel_generation.load(Ordering::SeqCst),
-                    )?;
+        let mut waiting_for_user_choice = false;
+        if !is_choice_selection {
+            if let Some(message) = &pending_user {
+            if let crate::tools::planner::ToolRoute::AskUserChoice {
+                question,
+                options,
+                reason,
+            } = crate::tools::planner::review_draft(
+                engine.endpoint(),
+                &message.content,
+                &result.content,
+            ) {
+                let choice_args = serde_json::json!({
+                    "question": question,
+                    "options": options,
+                    "reason": reason,
+                });
+                let tool_output = crate::tools::execute_tool(
+                    &worker_app,
+                    "ask_user_choice",
+                    &choice_args.to_string(),
+                )?;
+                if tool_output.starts_with("[choice-pending]") {
+                    worker_app
+                        .emit(
+                            "engine-trim",
+                            TrimEvent {
+                                suffix: result.content.clone(),
+                            },
+                        )
+                        .map_err(|error| format!("Could not replace a clarification draft: {error}"))?;
+                    waiting_for_user_choice = true;
+                    result.content = "โปรดเลือกหนึ่งตัวเลือกด้านบนเพื่อดำเนินการต่อ".to_string();
                 }
             }
         }
+        }
+
         let violations = engine::memory::constraint_guard::violations(
             engine.endpoint(),
             &result.content,
             &active_constraints,
         );
-        if !violations.is_empty()
+        if !waiting_for_user_choice
+            && !violations.is_empty()
             && !matches!(result.finish_reason, FinishReason::Cancelled)
             && !state.cancel_generation.load(Ordering::SeqCst)
         {
@@ -624,7 +716,8 @@ pub async fn generate_chat(
             )?;
         }
         if let Some(grounding) = &grounding {
-            if grounding.sources.is_empty()
+            if !waiting_for_user_choice
+                && grounding.sources.is_empty()
                 && !matches!(result.finish_reason, FinishReason::Cancelled)
                 && !state.cancel_generation.load(Ordering::SeqCst)
             {

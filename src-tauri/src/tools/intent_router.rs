@@ -8,7 +8,7 @@ pub struct AutoToolResult {
 
 /// Language-agnostic intent router for deterministic operations (e.g. pure math formulas).
 /// All conceptual tool calls (chat history, system status, model search, workspace files)
-/// are driven dynamically by the model via `tools_system_prompt` across all languages.
+/// are selected dynamically by the structured tool router across all languages.
 pub fn auto_route_user_intent(_app: &AppHandle, user_text: &str) -> Option<AutoToolResult> {
     let text = user_text.trim();
 

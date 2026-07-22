@@ -347,6 +347,12 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const [isAtBottom, setIsAtBottom] = useState(true);
   const pendingDelta = useRef("");
   const pendingAnimationFrame = useRef<number | null>(null);
+  // A few backend safeguards can replace a completed draft (for example when
+  // retrying a repetition loop, executing a native tool, or enforcing a
+  // saved constraint). Keep that replacement off-screen until it is complete
+  // so the answer does not visibly clear and restart two or three times.
+  const replacementInProgress = useRef(false);
+  const replacementContent = useRef("");
   const [promptQueue, setPromptQueue] = useState<string[]>([]);
   const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
 
@@ -388,6 +394,14 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     pendingDelta.current = "";
     if (!delta) return;
     setMessages((current) => current.map((message, index) => index === current.length - 1 ? { ...message, content: message.content + delta } : message));
+  }, []);
+
+  const commitGenerationContent = useCallback((content: string) => {
+    setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
+      ? { ...message, content }
+      : message));
+    replacementInProgress.current = false;
+    replacementContent.current = "";
   }, []);
 
   useEffect(() => () => {
@@ -494,9 +508,14 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     setDraft("");
   };
 
-  const sendMessage = async (overrideContent?: string) => {
+  const sendMessage = async (overrideContent?: string, choiceSelection = false) => {
     const content = (overrideContent ?? draft).trim();
     if (!content || !engineStarted) return;
+    if (content.includes("<<TOOL:")) {
+      setDraft("");
+      onNotify("Internal tool instructions are not sent as chat messages.");
+      return;
+    }
 
     if (streaming) {
       promptQueueRef.current = [...promptQueueRef.current, content];
@@ -535,22 +554,30 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     const requestMessages = [...messages.filter((m) => !m.isQueued), userMessage];
     setStreaming(true);
     pendingDelta.current = "";
+    replacementInProgress.current = false;
+    replacementContent.current = "";
     const controller = new AbortController();
     streamAbort.current = controller;
     try {
       const result = await streamLocalChat({
         messages: requestMessages,
         sessionId: session.id,
+        choiceSelection,
         signal: controller.signal,
         onDelta: (delta) => {
+          if (replacementInProgress.current) {
+            replacementContent.current += delta;
+            return;
+          }
           pendingDelta.current += delta;
           if (pendingAnimationFrame.current === null) pendingAnimationFrame.current = requestAnimationFrame(flushPendingDelta);
         },
         onTrim: (suffix) => {
           flushPendingDelta();
-          setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant" && suffix && message.content.endsWith(suffix)
-            ? { ...message, content: message.content.slice(0, -suffix.length) }
-            : message));
+          if (suffix) {
+            replacementInProgress.current = true;
+            replacementContent.current = "";
+          }
         },
         onStatus: (status) => {
           setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
@@ -563,6 +590,10 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
             : message));
         },
       });
+      flushPendingDelta();
+      if (result) {
+        commitGenerationContent(result.content);
+      }
       if (result?.sources.length) {
         setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
           ? { ...message, sources: result.sources }
@@ -577,13 +608,10 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       if (session.isNew && result?.content.trim()) {
         void invoke("generate_session_title", { sessionId: session.id }).then(() => refreshSessions()).catch((error) => onNotify(`Could not title chat: ${String(error)}`));
       }
-      if (result?.content) {
-        const extracted = extractOptionsFromMessage(result.content);
-        if (extracted) {
-          setPendingChoice(extracted);
-        }
-      }
     } catch (error) {
+      if (replacementInProgress.current && replacementContent.current) {
+        commitGenerationContent(replacementContent.current);
+      }
       if (!controller.signal.aborted) {
         setMessages((current) => current.map((message, index) => index === current.length - 1 && !message.content ? { ...message, content: "Sorry, the local engine could not complete that response." } : message));
         onNotify(`Message failed: ${String(error)}`);
@@ -592,6 +620,9 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       setStreaming(false);
       if (pendingAnimationFrame.current !== null) cancelAnimationFrame(pendingAnimationFrame.current);
       flushPendingDelta();
+      if (replacementInProgress.current && replacementContent.current) {
+        commitGenerationContent(replacementContent.current);
+      }
       if (streamAbort.current === controller) streamAbort.current = null;
 
       if (promptQueueRef.current.length > 0) {
@@ -838,10 +869,11 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           <InteractiveChoiceBox
             question={pendingChoice.question}
             options={pendingChoice.options}
+            disabled={streaming}
             onSubmit={(answer) => {
               setPendingChoice(null);
               setDraft("");
-              void sendMessage(answer);
+              void sendMessage(answer, true);
             }}
             onDismiss={() => setPendingChoice(null)}
           />
@@ -955,32 +987,6 @@ const openExternalUrl = async (url?: string) => {
   }
 };
 
-function extractOptionsFromMessage(content: string): PendingChoice | null {
-  if (!content) return null;
-  const lines = content.split("\n");
-  const options: string[] = [];
-  let question = "โปรดเลือกขอบเขตหรือหัวข้อที่ต้องการ:";
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.includes("ช่วยระบุ") || trimmed.includes("รบกวน") || trimmed.includes("เลือกขอบเขต") || trimmed.includes("ต้องการทราบ") || trimmed.includes("สนใจเพิ่มเติม")) {
-      question = trimmed.replace(/^[\:\-\*]+/, "").trim();
-    }
-    const match = trimmed.match(/^(?:\d+[\.\)]|[-•*])\s*(.+)$/);
-    if (match) {
-      const optText = match[1].trim();
-      if (optText.length >= 4 && optText.length <= 140 && !optText.startsWith("http") && !optText.startsWith("[") && !optText.includes("http")) {
-        options.push(optText);
-      }
-    }
-  }
-
-  if (options.length >= 2) {
-    return { question, options };
-  }
-  return null;
-}
-
 function extractDomain(url?: string): string {
   if (!url) return "web";
   try {
@@ -1001,7 +1007,9 @@ function GlobeIcon({ domain }: { domain: string }) {
 
 function cleanToolMarkers(content: string) {
   if (!content) return content;
-  return content.replace(/<<TOOL:[\s\S]*?>>/g, "").trim();
+  // Tool calls stream token-by-token. Hide the command as soon as its prefix
+  // arrives, rather than waiting for the closing marker at the end.
+  return content.replace(/<<TOOL:[\s\S]*(?:>>|$)/g, "").trim();
 }
 
 function preprocessLatex(content: string) {

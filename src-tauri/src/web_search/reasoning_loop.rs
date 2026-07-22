@@ -4,12 +4,8 @@
 //! and decides whether to:
 //! 1. Accept the evidence and proceed to final synthesis (fast path).
 //! 2. Run a targeted secondary search batch to fill knowledge gaps.
-//! 3. Signal the frontend to display an interactive choice UI for the user.
 
-use super::{
-    Confidence, EvidenceChunk, EvidenceQuality, RawEvidence, RetrievalTraceEntry,
-    RetrievalTraceRecorder, SourceKind, SubQuestion, SubQuestionResult,
-};
+use super::{EvidenceQuality, RetrievalTraceEntry, RetrievalTraceRecorder, SubQuestionResult};
 
 /// Minimum combined confidence to skip the secondary pass.
 const SUFFICIENCY_THRESHOLD: f32 = 0.65;
@@ -26,11 +22,6 @@ pub enum ReasoningAction {
     RefineSearch {
         refined_queries: Vec<String>,
         gap_description: String,
-    },
-    /// The query is open-ended with multiple valid directions; ask the user.
-    AskUser {
-        question: String,
-        options: Vec<String>,
     },
 }
 
@@ -49,7 +40,7 @@ pub struct PassResult {
 pub fn evaluate_pass(
     pass_number: usize,
     sub_results: &[SubQuestionResult],
-    original_query: &str,
+    _original_query: &str,
 ) -> PassResult {
     if pass_number >= MAX_PASSES {
         return PassResult {
@@ -64,31 +55,6 @@ pub fn evaluate_pass(
     let total_chunks: usize = sub_results.iter().map(|r| r.evidence.chunks.len()).sum();
     let has_weak = sub_results.iter().any(|r| r.quality == EvidenceQuality::Weak);
     let all_empty = sub_results.iter().all(|r| r.evidence.chunks.is_empty());
-
-    // Interactive choice detection for open-ended or choice-request queries
-    let lower_query = original_query.to_lowercase();
-    if lower_query.contains("เลือก")
-        || lower_query.contains("ทางเลือก")
-        || lower_query.contains("แนวทาง")
-        || lower_query.contains("ถามผู้ใช้")
-        || lower_query.contains("option")
-        || lower_query.contains("choice")
-        || lower_query.contains("grill-me")
-    {
-        return PassResult {
-            pass_number,
-            action: ReasoningAction::AskUser {
-                question: "โปรดเลือกแนวทางที่คุณต้องการให้ AI ดำเนินการต่อ:".to_string(),
-                options: vec![
-                    "แนวทางที่ 1: ดึงข้อมูลเชิงลึกเพิ่มเติมด้วย Crawl4AI".to_string(),
-                    "แนวทางที่ 2: สรุปและตอบคำถามด้วยข้อมูลปัจจุบัน".to_string(),
-                    "แนวทางที่ 3: ปรับแต่งข้อกำหนดเพิ่มเติม".to_string(),
-                ],
-            },
-            confidence,
-            status_message: format!("Pass {pass_number}: Displayed Interactive Choice UI for user selection"),
-        };
-    }
 
     // Fast path: strong evidence across all sub-questions
     if confidence >= SUFFICIENCY_THRESHOLD && !has_weak && total_chunks >= 2 {
@@ -170,9 +136,6 @@ pub fn record_pass_trace(
         ReasoningAction::RefineSearch { gap_description, .. } => {
             format!("requesting targeted search: {gap_description}")
         }
-        ReasoningAction::AskUser { question, .. } => {
-            format!("requesting user input: {question}")
-        }
     };
 
     trace.record(RetrievalTraceEntry {
@@ -191,7 +154,7 @@ pub fn record_pass_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web_search::{SourceHint};
+    use crate::web_search::{Confidence, EvidenceChunk, RawEvidence, SourceHint, SourceKind, SubQuestion};
     use uuid::Uuid;
 
     fn make_sub_result(text: &str, quality: EvidenceQuality, confidence: f32, chunk_count: usize) -> SubQuestionResult {

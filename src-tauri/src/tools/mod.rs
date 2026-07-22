@@ -2,6 +2,7 @@ pub mod evaluator;
 pub mod history;
 pub mod intent_router;
 pub mod models;
+pub mod planner;
 pub mod system;
 pub mod workspace;
 
@@ -17,6 +18,8 @@ pub fn execute_tool(app: &AppHandle, name: &str, raw_args: &str) -> Result<Strin
             struct ChoicePayload {
                 question: String,
                 options: Vec<String>,
+                #[serde(default)]
+                reason: String,
             }
 
             let payload: ChoicePayload = serde_json::from_str(clean_args)
@@ -27,14 +30,17 @@ pub fn execute_tool(app: &AppHandle, name: &str, raw_args: &str) -> Result<Strin
                         "Option 2: Perform deep web research".to_string(),
                         "Option 3: Custom adjustments".to_string(),
                     ],
+                    reason: String::new(),
                 });
 
             use tauri::Emitter;
             let _ = app.emit("ai-choice-request", &payload);
+            eprintln!("[tool-router] requesting user input: {}", payload.question);
             Ok(format!(
-                "Interactive Choice UI displayed to user with question: \"{}\" and {} options. Awaiting user choice.",
+                "[choice-pending] Interactive Choice UI displayed to user with question: \"{}\" and {} options. Required input: {}. Awaiting user choice.",
                 payload.question,
-                payload.options.len()
+                payload.options.len(),
+                payload.reason,
             ))
         }
         "search_chat_history" => {
@@ -95,26 +101,8 @@ fn parse_single_arg(args: &str) -> Option<String> {
 }
 
 pub fn tools_system_prompt() -> String {
-    r#"[CRITICAL SYSTEM RULE: Harness Native Tools]
-You have access to powerful local system tools. You MUST invoke them using <<TOOL: tool_name(...)>> when appropriate:
-
-1. Interactive Choice Tool (MANDATORY WHEN ASKING QUESTIONS OR OFFERING OPTIONS):
-   - ask_user_choice({"question": "Title", "options": ["Opt 1", "Opt 2", "Opt 3"]})
-   CRITICAL REQUIREMENT: Whenever you need to ask the user to clarify, narrow scope, pick a category, or select from multiple options (1, 2, 3, 4), YOU MUST CALL THIS TOOL IMMEDIATELY in your response. DO NOT write plain text lists asking questions without invoking this tool.
-
-2. History & Memory Tools:
-   - search_chat_history("query"): Search past conversations and chat sessions across all user history
-   - get_session_details("session_id" or "latest"): Get full message transcript of a past session
-
-3. Hardware & Workspace Tools:
-   - get_system_status(): Check system VRAM, free memory, GPU device, and active backend
-   - list_workspace_files("subpath"): List files in workspace
-   - read_workspace_file("relative_path"): Read text/code file from workspace
-   - evaluate_expression("expression"): Evaluate math calculations with 100% precision
-
-EXACT SYNTAX EXAMPLES:
-- If asking user to pick a topic or narrow scope:
-<<TOOL: ask_user_choice({"question": "โปรดเลือกขอบเขตข้อมูลที่สนใจ:", "options": ["1. เน้นตามประเภทโมเดล (LLMs / Image / Video)", "2. เน้นตามค่ายผู้พัฒนา (OpenAI / Google / Anthropic)", "3. เน้นตามฟีเจอร์เด่น (Context Window / Multimodal)", "4. เน้นข่าวอัปเดตล่าสุด 1-2 เดือนนี้"]})>>
+    r#"[Harness Native Tools]
+The host routes and executes native tools before this answer is generated. Use any supplied tool result as authoritative context. Do not print tool markers, tool syntax, or a fake interactive-choice list. If the host needs user input, it will display the native Choice UI and resume with the user's selection.
 "#
     .to_string()
 }

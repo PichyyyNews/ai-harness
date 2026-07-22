@@ -24,6 +24,8 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub choice_selection: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -588,6 +590,7 @@ impl Engine {
             max_tokens: Some(24),
             temperature: Some(0.2),
             session_id: None,
+            choice_selection: false,
         };
         match self.generate(probe, |_| Ok(()), || false) {
             Ok(result) if result.finish_reason == FinishReason::Stop => {}
