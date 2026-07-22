@@ -14,8 +14,8 @@ use tauri::AppHandle;
 pub const MAX_ACTIVE_PROVIDERS: usize = 3;
 pub const MAX_FALLBACK_PROVIDERS: usize = 2;
 const RETRIEVAL_DEADLINE: Duration = Duration::from_secs(8);
-const DEFAULT_RELEVANCE_FLOOR: f32 = 0.30;
-const CURRENT_NEWS_RELEVANCE_FLOOR: f32 = 0.45;
+const DEFAULT_RELEVANCE_FLOOR: f32 = 0.28;
+const CURRENT_NEWS_RELEVANCE_FLOOR: f32 = 0.28;
 
 /// Executes dedicated API and web workers concurrently. AI plans are always
 /// validated against this bounded runtime; no provider can make arbitrary HTTP

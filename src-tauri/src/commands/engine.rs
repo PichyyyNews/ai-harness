@@ -579,6 +579,14 @@ pub async fn generate_chat(
             result.retrieval_trace = grounding.retrieval_trace.clone();
         }
         if let Some(session_id) = &session_id {
+            if let Some(message) = &pending_user {
+                engine::memory::short_term::extract_and_save_direct_memories(
+                    &worker_app,
+                    session_id,
+                    &message.content,
+                    &result.content,
+                );
+            }
             sessions::store::append_message(
                 &worker_app,
                 session_id,

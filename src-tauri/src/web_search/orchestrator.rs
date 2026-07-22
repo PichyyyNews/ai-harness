@@ -141,10 +141,6 @@ fn merge_provider_choices(
 }
 
 fn merge_evidence(first: RawEvidence, second: RawEvidence) -> RawEvidence {
-    // A retry exists because the first pass was weak. Retaining its weak
-    // evidence alongside the retry can reintroduce unrelated material (for
-    // example a news headline that merely mentions AI). Keep it only if the
-    // retry produced no usable evidence at all.
     if second.chunks.is_empty() {
         first
     } else {

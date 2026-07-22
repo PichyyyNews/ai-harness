@@ -119,6 +119,54 @@ pub fn expire_turn_constraints(app: &AppHandle, session_id: &str) {
     let _ = store::expire_turn_constraints(app, session_id);
 }
 
+pub fn extract_and_save_direct_memories(
+    app: &AppHandle,
+    session_id: &str,
+    user_text: &str,
+    assistant_text: &str,
+) {
+    let combined = format!("{user_text}\n{assistant_text}");
+
+    // 1. Process explicit markers: <<REMEMBER_RULE: text>> or <<REMEMBER_FACT: text>>
+    for line in combined.lines() {
+        if let Some(start) = line.find("<<REMEMBER_RULE:") {
+            if let Some(end) = line[start..].find(">>") {
+                let rule = line[start + 16..start + end].trim();
+                if !rule.is_empty() {
+                    let _ = store::save_constraint(app, session_id, rule, "session");
+                    eprintln!("[direct-memory] saved rule from marker: '{rule}'");
+                }
+            }
+        }
+        if let Some(start) = line.find("<<REMEMBER_FACT:") {
+            if let Some(end) = line[start..].find(">>") {
+                let fact = line[start + 16..start + end].trim();
+                if !fact.is_empty() {
+                    let _ = store::save_long_term_fact(app, "preference", fact, Some(session_id), 1.0);
+                    eprintln!("[direct-memory] saved fact from marker: '{fact}'");
+                }
+            }
+        }
+    }
+
+    // 2. Direct natural language detection for memory triggers (Thai & English)
+    let triggers = [
+        "จำไว้นะ", "จำไว้ว่า", "อย่าใช้", "ห้ามใช้", "ต้องตอบ", "ตอบเป็น",
+        "always answer", "never use", "remember that", "remember:",
+    ];
+
+    for trigger in triggers {
+        if user_text.to_lowercase().contains(trigger) {
+            let rule = user_text.trim();
+            if !rule.is_empty() {
+                let _ = store::save_constraint(app, session_id, rule, "session");
+                eprintln!("[direct-memory] saved rule from user trigger: '{rule}'");
+                break;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

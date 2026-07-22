@@ -26,8 +26,12 @@ pub fn choose_providers(endpoint: &str, plan: &QueryPlan) -> Option<Vec<Vec<Prov
     let choices = plan
         .sub_questions
         .iter()
-        .map(|question| choose_for_question(endpoint, &question.text))
-        .collect::<Option<Vec<_>>>()?;
+        .map(|question| {
+            choose_for_question(endpoint, &question.text).unwrap_or_else(|| {
+                vec![ProviderKind::GeneralWeb, ProviderKind::GoogleNews]
+            })
+        })
+        .collect::<Vec<_>>();
     Some(choices)
 }
 

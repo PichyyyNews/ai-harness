@@ -3,6 +3,13 @@ use scraper::{Html, Selector};
 use std::time::Duration;
 
 pub fn search(query: &str) -> Result<Vec<SearchResult>, String> {
+    // Try Instant Answer API first for fast, structured keyless response
+    if let Ok(results) = search_api(query) {
+        if !results.is_empty() {
+            return Ok(results);
+        }
+    }
+
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(4))
         .user_agent("Mozilla/5.0 AI Harness web grounding")
@@ -17,6 +24,68 @@ pub fn search(query: &str) -> Result<Vec<SearchResult>, String> {
         .text()
         .map_err(|error| format!("Could not read DuckDuckGo results: {error}"))?;
     parse_results(&response)
+}
+
+fn search_api(query: &str) -> Result<Vec<SearchResult>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .user_agent("Mozilla/5.0 AI Harness web grounding")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let value: serde_json::Value = client
+        .get("https://api.duckduckgo.com/")
+        .query(&[("q", query), ("format", "json"), ("no_html", "1")])
+        .send()
+        .map_err(|e| e.to_string())?
+        .json()
+        .map_err(|e| e.to_string())?;
+
+    let mut results = Vec::new();
+
+    if let Some(abstract_text) = value.get("AbstractText").and_then(|v| v.as_str()) {
+        if !abstract_text.trim().is_empty() {
+            let heading = value
+                .get("Heading")
+                .and_then(|v| v.as_str())
+                .unwrap_or(query);
+            let url = value
+                .get("AbstractURL")
+                .and_then(|v| v.as_str())
+                .unwrap_or("https://duckduckgo.com")
+                .to_string();
+
+            results.push(SearchResult {
+                title: heading.to_string(),
+                url,
+                snippet: abstract_text.to_string(),
+                content: String::new(),
+            });
+        }
+    }
+
+    if let Some(related) = value.get("RelatedTopics").and_then(|v| v.as_array()) {
+        for item in related.iter().take(5) {
+            let text = item.get("Text").and_then(|v| v.as_str());
+            let url = item.get("FirstURL").and_then(|v| v.as_str());
+            if let (Some(t), Some(u)) = (text, url) {
+                if !t.trim().is_empty() {
+                    results.push(SearchResult {
+                        title: t.chars().take(60).collect(),
+                        url: u.to_string(),
+                        snippet: t.to_string(),
+                        content: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    if results.is_empty() {
+        Err("Instant Answer returned no results".to_string())
+    } else {
+        Ok(results)
+    }
 }
 
 fn parse_results(response: &str) -> Result<Vec<SearchResult>, String> {

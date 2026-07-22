@@ -94,10 +94,10 @@ fn compose_primary_prompt(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n\n");
     (!body.trim().is_empty()).then(|| {
         format!(
-            "[Memory Directives]\nThe following memory was retrieved from the local memory store. Active constraints and communication preferences are authoritative and must affect this response.\n{body}"
+            "[Memory Directives]\nActive rules, preferences, and context retrieved from local memory:\n{body}"
         )
     })
 }
