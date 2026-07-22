@@ -26,7 +26,7 @@ pub fn auto_route_user_intent(app: &AppHandle, user_text: &str) -> Option<AutoTo
         }
     }
 
-    // 2. Chat history / past sessions search
+    // 2. Chat history / past sessions / personal identity lookup
     if text.contains("เมื่อวาน")
         || text.contains("ประวัติ")
         || text.contains("แชตเก่า")
@@ -34,17 +34,21 @@ pub fn auto_route_user_intent(app: &AppHandle, user_text: &str) -> Option<AutoTo
         || text.contains("past chat")
         || text.contains("chat history")
         || text.contains("previous session")
+        || text.contains("ผมคือใคร")
+        || text.contains("ผมชื่ออะไร")
+        || text.contains("ฉันคือใคร")
+        || text.contains("ฉันชื่ออะไร")
+        || text.contains("จำผมได้ไหม")
+        || text.contains("who am i")
+        || text.contains("what is my name")
     {
-        let query = text
-            .replace("เมื่อวาน", "")
-            .replace("คุยเรื่อง", "")
-            .replace("ประวัติ", "")
-            .replace("เคยคุย", "")
-            .trim()
-            .to_string();
+        let query_term = if text.contains("ชื่อ") || text.contains("name") || text.contains("ใคร") || text.contains("who") {
+            "ชื่อ"
+        } else {
+            "ผม"
+        };
 
-        let search_query = if query.len() >= 2 { query } else { text.clone() };
-        if let Ok(output) = super::history::search_chat_history(app, &search_query, 5) {
+        if let Ok(output) = super::history::search_chat_history(app, query_term, 5) {
             return Some(AutoToolResult {
                 tool_name: "search_chat_history".to_string(),
                 output,

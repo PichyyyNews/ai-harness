@@ -39,6 +39,11 @@ pub fn routing_decision(
             reason: "query_too_long",
         };
     }
+    if is_personal_or_memory_query(query) {
+        return RoutingDecision::Skip {
+            reason: "personal_memory_query",
+        };
+    }
     if let Some(classification) = classification {
         if !classification.needs_search {
             return RoutingDecision::Skip {
@@ -72,6 +77,16 @@ pub fn plan_query(
         sub_questions,
         is_compound: false,
     })
+}
+
+fn is_personal_or_memory_query(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let keywords = [
+        "ผมคือใคร", "ผมชื่ออะไร", "ฉันคือใคร", "ฉันชื่ออะไร", "จำผมได้ไหม",
+        "จำฉันได้ไหม", "เราเคยคุย", "เคยคุยอะไร", "ผมทำงานอะไร", "ใครคือผม",
+        "who am i", "what is my name", "do you remember me", "my role is"
+    ];
+    keywords.iter().any(|k| lower.contains(k))
 }
 
 #[cfg(test)]

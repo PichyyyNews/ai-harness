@@ -144,15 +144,15 @@ pub fn process_extracted_facts(
 
 pub fn retrieve_relevant_facts(
     app: &AppHandle,
-    current_prompt: &str,
-    embedding_endpoint: Option<&str>,
+    _current_prompt: &str,
+    _embedding_endpoint: Option<&str>,
 ) -> Vec<LongTermFact> {
     let raw_facts = match store::get_all_long_term_facts(app) {
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
 
-    let facts: Vec<LongTermFact> = raw_facts
+    raw_facts
         .into_iter()
         .map(
             |(id, cat, content, src, confidence, last_confirmed)| LongTermFact {
@@ -164,56 +164,7 @@ pub fn retrieve_relevant_facts(
                 last_confirmed_at: last_confirmed,
             },
         )
-        .collect();
-
-    let semantic_vectors = embedding_endpoint.and_then(|endpoint| {
-        let mut inputs = Vec::with_capacity(facts.len() + 1);
-        inputs.push(current_prompt.chars().take(1_500).collect::<String>());
-        inputs.extend(
-            facts
-                .iter()
-                .map(|fact| fact.content.chars().take(1_500).collect::<String>()),
-        );
-        crate::engine::embedding_runtime::embed_retrieval(
-            endpoint,
-            &inputs[0],
-            &inputs[1..],
-        )
-        .ok()
-    });
-    let mut selected = Vec::new();
-    let mut remainder = Vec::new();
-
-    for (index, fact) in facts.into_iter().enumerate() {
-        if fact.category == FactCategory::CommunicationStyle {
-            selected.push(fact);
-        } else {
-            let score = semantic_vectors
-                .as_ref()
-                .and_then(|vectors| {
-                    vectors
-                        .first()
-                        .zip(vectors.get(index + 1))
-                        .map(|(query, fact)| {
-                            crate::engine::embedding_runtime::cosine_similarity(query, fact)
-                        })
-                })
-                .unwrap_or_else(|| lexical_similarity(current_prompt, &fact.content));
-            let minimum = if semantic_vectors.is_some() {
-                0.35
-            } else {
-                0.15
-            };
-            if score > minimum {
-                remainder.push((fact, score));
-            }
-        }
-    }
-
-    remainder.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let top_k: Vec<LongTermFact> = remainder.into_iter().take(6).map(|(f, _)| f).collect();
-    selected.extend(top_k);
-    selected
+        .collect()
 }
 
 pub fn format_long_term_prompt(facts: &[LongTermFact]) -> Option<String> {
