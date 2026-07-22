@@ -770,7 +770,7 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
         {messages.map((message, index) => {
           const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
           return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
-            {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} streaming={isStreamingMessage} />}
+            {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} sources={message.sources ?? []} streaming={isStreamingMessage} />}
             {message.role === "assistant" ? <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} /> : <p>{message.content}</p>}
           </article>;
         })}
@@ -845,13 +845,63 @@ function ContextDonutChart({ usedChars = 0, maxTokens = 8192 }: { usedChars?: nu
   );
 }
 
+const openExternalUrl = async (url?: string) => {
+  if (!url) return;
+  try {
+    await invoke("plugin:shell|open", { path: url });
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+};
+
+function extractDomain(url?: string): string {
+  if (!url) return "web";
+  try {
+    const host = new URL(url).hostname;
+    return host.replace(/^www\./, "");
+  } catch {
+    return "web";
+  }
+}
+
+function GlobeIcon({ domain }: { domain: string }) {
+  return (
+    <div className={styles.domainFavicon}>
+      <span>{domain.charAt(0).toUpperCase()}</span>
+    </div>
+  );
+}
+
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
   if (!content) return <p>{streaming ? "Thinking…" : ""}</p>;
-  return <div className={styles.markdown}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock, a: CitationLink(sources) }}>{citationMarkdown(content, sources)}</ReactMarkdown>
-    {!!sources.length && <div className={styles.webSources} aria-label="Web sources">{sources.map((source) => <a href={source.url} target="_blank" rel="noreferrer" key={source.id}>[{source.id}] {source.title}</a>)}</div>}
-    {streaming && <span className={styles.streamingCursor} aria-label="Generating" />}
-  </div>;
+  return (
+    <div className={styles.markdown}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={{ pre: CodeBlock, a: CitationLink(sources) }}
+      >
+        {citationMarkdown(content, sources)}
+      </ReactMarkdown>
+      {!!sources.length && (
+        <div className={styles.webSources} aria-label="Web sources">
+          {sources.map((source) => (
+            <a
+              href={source.url}
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternalUrl(source.url);
+              }}
+              key={source.id}
+            >
+              [{source.id}] {source.title}
+            </a>
+          ))}
+        </div>
+      )}
+      {streaming && <span className={styles.streamingCursor} aria-label="Generating" />}
+    </div>
+  );
 }
 
 function citationMarkdown(content: string, sources: WebSource[]) {
@@ -866,53 +916,129 @@ function citationMarkdown(content: string, sources: WebSource[]) {
 function CitationLink(sources: WebSource[]) {
   return ({ href, children }: ComponentPropsWithoutRef<"a">) => {
     const source = sources.find((item) => item.url === href);
-    if (!source) return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
-    return <a className={styles.citationBadge} href={source.url} target="_blank" rel="noreferrer" title={source.title}>{children}</a>;
+    const targetUrl = href || source?.url;
+    return (
+      <a
+        className={source ? styles.citationBadge : styles.markdownLink}
+        href={targetUrl}
+        onClick={(e) => {
+          e.preventDefault();
+          if (targetUrl) void openExternalUrl(targetUrl);
+        }}
+        title={source?.title || href}
+      >
+        {children}
+      </a>
+    );
   };
 }
 
-function ThinkingSummary({ process, retrievalTrace, streaming }: { process: string[]; retrievalTrace: RetrievalTraceEntry[]; streaming: boolean }) {
-  if (!process.length && !retrievalTrace.length && !streaming) return null;
-  const latest = process.at(-1) ?? "Starting request";
-  return <details className={styles.thinkingSummary}>
-    <summary><CaretRight aria-hidden="true" weight="bold" /><span>{latest}</span>{streaming && <i aria-label="In progress" />}</summary>
-    {!!process.length && <div className={styles.processSteps}>{process.map((stage, index) => <p key={`${stage}-${index}`}>{stage}</p>)}</div>}
-    {!!retrievalTrace.length && <RetrievalTrace entries={retrievalTrace} />}
-  </details>;
-}
+function ThinkingSummary({ process, retrievalTrace, sources, streaming }: { process: string[]; retrievalTrace: RetrievalTraceEntry[]; sources: WebSource[]; streaming: boolean }) {
+  if (!process.length && !retrievalTrace.length && !sources.length && !streaming) return null;
 
-function RetrievalTrace({ entries }: { entries: RetrievalTraceEntry[] }) {
-  return <details className={styles.retrievalTrace} open>
-    <summary><CaretRight aria-hidden="true" weight="bold" />Live retrieval trace · {entries.length} records</summary>
-    <p className={styles.traceDisclosure}>Public APIs, every candidate before filtering, ranking decisions, and final grounding. Secrets and request headers are never stored.</p>
-    <ol className={styles.traceList}>
-      {entries.map((entry, index) => {
-        const endpointIsLink = isOpenableUrl(entry.endpoint);
-        const sourceIsLink = isOpenableUrl(entry.url);
-        return <li className={styles.traceEntry} key={`${entry.stage}-${entry.provider}-${entry.url ?? entry.endpoint ?? "request"}-${index}`}>
-          <div className={styles.traceMeta}>
-            <strong>{entry.stage}</strong>
-            <span>{entry.provider}</span>
-            <em className={styles.traceDecision}>{entry.decision}</em>
-            {typeof entry.score === "number" && <em className={styles.traceScore}>score {entry.score.toFixed(3)}</em>}
+  const [toolResultsOpen, setToolResultsOpen] = useState(false);
+  const [retrievalOpen, setRetrievalOpen] = useState(false);
+
+  const hasToolCalls = process.some((step) => step.toLowerCase().includes("harness tool") || step.toLowerCase().includes("executing"));
+  const commandSteps = process.filter((step) => !step.toLowerCase().includes("writing response"));
+
+  return (
+    <div className={styles.thinkingContainer}>
+      {/* Tool Execution Tree (Image 2 style) */}
+      {process.length > 0 && (
+        <div className={styles.toolTraceBox}>
+          <div className={styles.toolTraceHeader} onClick={() => setToolResultsOpen((prev) => !prev)}>
+            <div className={styles.toolTraceTitle}>
+              <Code size={16} weight="bold" />
+              <span>{hasToolCalls ? "Ran a tool command, read workspace/history" : "Ran reasoning steps"}</span>
+            </div>
+            <div className={styles.toolTraceMeta}>
+              <span className={styles.stepBadge}>{commandSteps.length} steps</span>
+              {toolResultsOpen ? <CaretUp size={14} weight="bold" /> : <CaretDown size={14} weight="bold" />}
+            </div>
           </div>
-          {entry.endpoint && (endpointIsLink
-            ? <a className={styles.traceLink} href={entry.endpoint} target="_blank" rel="noreferrer">API: {entry.endpoint}</a>
-            : <span className={styles.traceEndpoint}>API: {entry.endpoint}</span>)}
-          {entry.url && (sourceIsLink
-            ? <a className={styles.traceLink} href={entry.url} target="_blank" rel="noreferrer">{entry.title ?? entry.url}</a>
-            : <span className={styles.traceEndpoint}>{entry.title ?? entry.url}</span>)}
-          {entry.preview && <p className={styles.tracePreview}>{entry.preview}</p>}
-          {entry.detail && <p className={styles.traceDetail}>{entry.detail}</p>}
-        </li>;
-      })}
-    </ol>
-  </details>;
+
+          {toolResultsOpen && (
+            <div className={styles.toolTraceTree}>
+              {commandSteps.map((step, idx) => (
+                <div key={idx} className={styles.toolTreeNode}>
+                  <span className={styles.treeConnector}>├─</span>
+                  <div className={styles.treeNodeContent}>
+                    {step.toLowerCase().includes("harness tool") ? (
+                      <span className={styles.cmdPrefix}>&gt;_ {step}</span>
+                    ) : (
+                      <span className={styles.filePrefix}>📄 {step}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div className={styles.toolTreeNode}>
+                <span className={styles.treeConnector}>└─</span>
+                <div className={styles.treeDoneBadge}>
+                  <Check size={14} weight="bold" />
+                  <span>{streaming ? "Running..." : "Done"}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Web Search Citation Card (Image 1 style) */}
+      {(retrievalTrace.length > 0 || sources.length > 0) && (
+        <div className={styles.searchCitationBox}>
+          <div className={styles.searchCitationHeader} onClick={() => setRetrievalOpen((prev) => !prev)}>
+            <div className={styles.searchCitationTitle}>
+              <MagnifyingGlass size={16} weight="bold" />
+              <span>Live Retrieval & Citations</span>
+            </div>
+            <div className={styles.searchCitationMeta}>
+              <span className={styles.resultsBadge}>{sources.length || retrievalTrace.length} results</span>
+              {retrievalOpen ? <CaretUp size={14} weight="bold" /> : <CaretDown size={14} weight="bold" />}
+            </div>
+          </div>
+
+          {retrievalOpen && (
+            <div className={styles.searchCitationBody}>
+              <div className={styles.citationCardList}>
+                {(sources.length > 0 ? sources : retrievalTrace).map((item: any, index) => {
+                  const url = item.url || item.endpoint;
+                  const domain = extractDomain(url);
+                  const title = item.title || item.stage || "Source Result";
+                  return (
+                    <div
+                      key={index}
+                      className={styles.citationCardItem}
+                      onClick={() => url && void openExternalUrl(url)}
+                    >
+                      <div className={styles.citationItemLeft}>
+                        <GlobeIcon domain={domain} />
+                        <div className={styles.citationItemInfo}>
+                          <span className={styles.citationItemTitle}>{title}</span>
+                          <span className={styles.citationItemDomain}>{domain}</span>
+                        </div>
+                      </div>
+                      {typeof item.score === "number" && (
+                        <span className={styles.citationItemScore}>{(item.score * 100).toFixed(0)}% match</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className={styles.searchDoneFooter}>
+                <Check size={14} weight="bold" />
+                <span>Done</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
-function isOpenableUrl(value?: string) {
-  return !!value && /^https?:\/\//i.test(value);
-}
+
 
 function CodeBlock({ children }: ComponentPropsWithoutRef<"pre">) {
   const [copied, setCopied] = useState(false);
