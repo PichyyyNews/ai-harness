@@ -366,6 +366,27 @@ pub async fn generate_chat(
                 },
             );
         }
+        if let Some(message) = &pending_user {
+            if let Some(auto_tool) = crate::tools::intent_router::auto_route_user_intent(&worker_app, &message.content) {
+                let _ = worker_app.emit(
+                    "engine-status",
+                    StatusEvent {
+                        status: format!("Executing Harness Tool: {}", auto_tool.tool_name),
+                    },
+                );
+                request.messages.insert(
+                    0,
+                    engine::ChatMessage {
+                        role: "system".to_string(),
+                        content: format!(
+                            "[Harness Native Tool Result: {}]\nReal-time tool execution data from user's local machine:\n{}",
+                            auto_tool.tool_name, auto_tool.output
+                        ),
+                        created_at: None,
+                    },
+                );
+            }
+        }
         let mut active_constraints = Vec::new();
         if state.memory_injection_enabled.load(Ordering::SeqCst) {
         if let Some(session_id) = &session_id {

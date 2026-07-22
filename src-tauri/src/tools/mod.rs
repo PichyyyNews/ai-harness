@@ -1,5 +1,6 @@
 pub mod evaluator;
 pub mod history;
+pub mod intent_router;
 pub mod models;
 pub mod system;
 pub mod workspace;
