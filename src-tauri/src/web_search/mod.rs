@@ -1,6 +1,7 @@
 pub mod bing_rss;
 pub mod bm25;
 pub mod brave;
+pub mod crawl4ai;
 pub mod duckduckgo;
 pub mod health;
 pub mod manager;

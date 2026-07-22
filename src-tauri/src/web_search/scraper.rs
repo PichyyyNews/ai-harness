@@ -6,6 +6,13 @@ const MAX_DOCUMENT_CHARS: usize = 12_000;
 const MAX_DOCUMENTS_TO_READ: usize = 12;
 
 pub fn enrich_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    if let Some(crawled) = super::crawl4ai::enrich_with_crawl4ai(&results) {
+        let valid = crawled.into_iter().filter(|r| r.content.len() >= 80).collect::<Vec<_>>();
+        if !valid.is_empty() {
+            return valid;
+        }
+    }
+
     let handles = results
         .into_iter()
         .take(MAX_DOCUMENTS_TO_READ)
