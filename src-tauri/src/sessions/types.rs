@@ -1,4 +1,5 @@
 use serde::Serialize;
+use crate::web_search::WebSource;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +19,7 @@ pub struct SessionMessage {
     pub content: String,
     pub thinking_summary: Option<String>,
     pub finish_reason: Option<String>,
+    pub web_sources: Option<Vec<WebSource>>,
     pub created_at: String,
     pub sequence: i64,
 }

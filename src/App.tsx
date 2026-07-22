@@ -7,14 +7,14 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import logoUrl from "../logo.svg";
 import { Badge, Button, Card, Textarea, Toast } from "./components";
-import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, SessionDetail, SessionSummary } from "./types";
+import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, SessionDetail, SessionSummary, WebSource } from "./types";
 import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
 import styles from "./App.module.css";
 
 type Screen = "picker" | "chat";
 type MenuName = "File" | "Edit" | "View" | "Help";
 type WindowAction = "minimize" | "maximize" | "close";
-type ConversationMessage = ChatMessage & { process?: string[] };
+type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[] };
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return "Size unavailable";
@@ -310,7 +310,7 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
       const detail = await invoke<SessionDetail>("get_session", { sessionId });
       setActiveSessionId(detail.session.id);
       setActiveSessionModelId(detail.session.modelId);
-      setMessages(detail.messages.map((message) => ({ role: message.role, content: message.content, process: message.thinkingSummary ? [message.thinkingSummary] : [] })));
+      setMessages(detail.messages.map((message) => ({ role: message.role, content: message.content, process: message.thinkingSummary ? [message.thinkingSummary] : [], sources: message.webSources })));
       if (detail.session.modelId && detail.session.modelId !== model.repoId) onNotify(`This chat was created with ${detail.session.modelId}. Select that model before continuing.`);
     } catch (error) {
       onNotify(`Could not open saved chat: ${String(error)}`);
@@ -467,6 +467,11 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
       if (result?.finishReason === "repetition_detected") {
         onNotify("A repetitive output loop was stopped and its repeated tail was removed.");
       }
+      if (result?.sources.length) {
+        setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
+          ? { ...message, sources: result.sources }
+          : message));
+      }
       await refreshSessions();
       if (session.isNew && result?.content.trim()) {
         void invoke("generate_session_title", { sessionId: session.id }).then(() => refreshSessions()).catch((error) => onNotify(`Could not title chat: ${String(error)}`));
@@ -510,7 +515,7 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
           const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
           return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
             {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} streaming={isStreamingMessage} />}
-            {message.role === "assistant" ? <MarkdownMessage content={message.content} streaming={isStreamingMessage} /> : <p>{message.content}</p>}
+            {message.role === "assistant" ? <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} /> : <p>{message.content}</p>}
           </article>;
         })}
       </div>
@@ -527,12 +532,30 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
   </section>;
 }
 
-function MarkdownMessage({ content, streaming }: { content: string; streaming: boolean }) {
+function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
   if (!content) return <p>{streaming ? "Thinking…" : ""}</p>;
   return <div className={styles.markdown}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock }}>{content}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: CodeBlock, a: CitationLink(sources) }}>{citationMarkdown(content, sources)}</ReactMarkdown>
+    {!!sources.length && <div className={styles.webSources} aria-label="Web sources">{sources.map((source) => <a href={source.url} target="_blank" rel="noreferrer" key={source.id}>[{source.id}] {source.title}</a>)}</div>}
     {streaming && <span className={styles.streamingCursor} aria-label="Generating" />}
   </div>;
+}
+
+function citationMarkdown(content: string, sources: WebSource[]) {
+  if (!sources.length) return content;
+  const byId = new Map(sources.map((source) => [source.id, source]));
+  return content.split(/(```[\s\S]*?```)/g).map((part) => part.startsWith("```") ? part : part.replace(/\[(\d+)\]/g, (citation, rawId) => {
+    const source = byId.get(Number(rawId));
+    return source ? `[${rawId}](<${source.url}> "${source.title.replaceAll('"', "'")}")` : citation;
+  })).join("");
+}
+
+function CitationLink(sources: WebSource[]) {
+  return ({ href, children }: ComponentPropsWithoutRef<"a">) => {
+    const source = sources.find((item) => item.url === href);
+    if (!source) return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+    return <a className={styles.citationBadge} href={source.url} target="_blank" rel="noreferrer" title={source.title}>{children}</a>;
+  };
 }
 
 function ThinkingSummary({ process, streaming }: { process: string[]; streaming: boolean }) {

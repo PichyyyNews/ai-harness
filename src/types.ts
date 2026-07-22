@@ -60,6 +60,7 @@ export interface SessionMessage {
   content: string;
   thinkingSummary?: string;
   finishReason?: string;
+  webSources?: WebSource[];
   createdAt: string;
   sequence: number;
 }
@@ -68,4 +69,10 @@ export interface SessionDetail {
   session: SessionSummary;
   messages: SessionMessage[];
   conversationMemory: string;
+}
+
+export interface WebSource {
+  id: number;
+  title: string;
+  url: string;
 }

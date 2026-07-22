@@ -3,6 +3,7 @@ mod engine;
 mod models;
 mod sessions;
 mod state;
+mod web_search;
 
 pub fn run() {
     tauri::Builder::default()

@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import type { WebSource } from "../types";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -22,6 +23,7 @@ interface EngineStatusEvent { status: string; }
 export interface GenerationResult {
   content: string;
   finishReason: "stop" | "length" | "repetition_detected" | "cancelled" | string;
+  sources: WebSource[];
 }
 
 export async function streamLocalChat({ messages, sessionId, signal, onDelta, onTrim, onStatus }: StreamChatOptions): Promise<GenerationResult | undefined> {
