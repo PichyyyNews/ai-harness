@@ -1,50 +1,249 @@
-# AI Harness handoff
+# AI Harness — Handoff Document
+> Last updated: 2026-07-22 (session covering tiered memory, UI responsiveness, and lock-free background workers)
 
-## Current objective
+---
 
-Continue improving the local AI Harness desktop application: a Tauri 2 + React/Vite app that downloads GGUF models, runs a local llama.cpp sidecar, and provides streaming chat. The immediate implementation focus is reliable, privacy-conscious temporal context for local LLM responses.
+## 1. Project Overview
 
-## Current state
+**AI Harness** is a desktop app built with **Tauri 2 + React/Vite (TypeScript)** frontend and a **Rust** backend (`src-tauri`). It downloads GGUF models, runs a local `llama.cpp` sidecar (`llama-server`), and provides streaming chat with:
 
-- The app has a monochrome desktop shell with `File`, `Edit`, `View`, and `Help`, using the supplied `logo.svg`.
-- Chat has session persistence in SQLite, Recents/search/rename/delete controls, streaming Markdown rendering, copyable highlighted code blocks, and manual-scroll behavior while generation is active.
-- Session storage lives in the Tauri app data directory as `harness.db`; user and assistant messages are persisted before/after generation.
-- Frontend notifications now appear centered below the desktop menu bar.
-- Model/GPU details and acceleration controls were intentionally removed from the visible sidebar; engine selection remains backend-driven.
+- Persistent session history in SQLite (`harness.db`)
+- Tiered memory system (short / mid / long-term)
+- Background model workers for silent memory extraction
+- Real-time web search grounding
+- Context usage donut chart indicator
+- Temporal context (local + network time calibration)
 
-## Temporal-context implementation
+---
 
-Relevant specification: `C:\Users\Newsk\Downloads\llm-time-perception-spec.md`.
+## 2. Current Architecture
 
-The current implementation is in `src-tauri/src/engine/time_manager.rs` and is wired through `src-tauri/src/state.rs`, `src-tauri/src/commands/engine.rs`, `src-tauri/src/commands/sessions.rs`, and `src-tauri/src/engine/context_manager.rs`.
+### Frontend — `src/App.tsx`
+- React state machine managing sessions, streaming, UI tabs
+- `streaming` state: `true` while AI is generating → gates `sendMessage`
+- `setStreaming(false)` must always be called in the `finally` block of `sendMessage`
+- `<Textarea>` is only gated by `engineStarted`, never by `streaming` — user can always type
+- Context Donut Chart: SVG next to Send button, shows token usage (~3.8 chars/token estimate), hover tooltip
 
-- Every generation receives a structured temporal system message.
-- New persisted messages use UTC ISO-8601 timestamps; old Unix-millisecond rows are still readable for gap detection.
-- Gaps of one hour or more add invisible system notes; negative deltas are ignored.
-- Memory compaction receives timestamps and is instructed to normalize relative wording to absolute dates/timestamps.
-- `TimeAuthority` combines two sources:
-  1. the OS clock, which is always available offline;
-  2. network-derived IANA timezone from `https://ipwho.is/`, followed by current time for that timezone from `https://timeapi.io/api/time/current/zone`.
-- The network calibration is cached for 15 minutes, retries use a five-minute backoff, and an old calibration may be used for up to 24 hours. Requests time out after three seconds. If either external source fails, the app uses the OS clock without blocking chat further.
-- The app retains only the timezone identifier, calibrated time, and monotonic sync point in memory. It does not persist the public IP address, city, coordinates, or the full API responses.
+### Backend — `src-tauri/src/`
 
-## Verification performed
+```
+commands/
+  engine.rs        — generate_chat, start/stop engine, trigger_session_end_memory
+  sessions.rs      — create/list/get/delete sessions, generate_session_title (lock-free)
+engine/
+  runtime.rs       — Engine struct, endpoint() getter, llama-server process management
+  context_manager.rs — ConversationMemory, generate_with_recovery, web budget
+  memory/
+    mod.rs         — assemble_tiered_memory_prompts()
+    worker.rs      — run_after_turn_extraction, run_session_end_extraction (NO Mutex inside)
+    short_term.rs  — session-scoped constraints, expire_turn_constraints
+    mid_term.rs    — goals, decisions, plan steps per session
+    long_term.rs   — durable user facts (filtered for sensitivity)
+  time_manager.rs  — TimeAuthority, network IANA timezone calibration
+  faithfulness.rs  — claim grounding checker
+  repetition_guard.rs
+state.rs           — EngineState { engine: Mutex<Option<Engine>>, ... }
+```
 
-- `cargo test` from `src-tauri` passed with 8 tests.
-- The tests cover repetition guards, session cascade migration, temporal gap markers, negative clock changes, API timestamp parsing, timezone request validation, and temporal-header source labeling.
-- `npm.cmd run build` passed before the last Rust-only temporal changes.
+---
 
-## Open verification / next steps
+## 3. Critical Architecture Rule — Mutex / Lock Protocol
 
-1. Run the Tauri desktop app and send a message while online. Confirm the generated prompt reports the network-calibrated source instead of the OS fallback. Do not expose the system prompt or any location details in the UI.
-2. Test offline mode or temporarily block the providers. The composer must remain responsive and chat must use the OS-clock fallback.
-3. Confirm `timeapi.io` remains reachable within the three-second timeout from the user's normal network. A manual probe succeeded once but another request timed out; the fallback behavior is deliberate, but production telemetry or a configurable provider would improve observability.
-4. If an explicit privacy control is desired later, add a setting that disables network time and clears the in-memory calibration. Do not silently store IP-derived data.
-5. For a production release, consider replacing public best-effort providers with a user-configured or owned time service, while preserving the same OS fallback.
+**The most important invariant in the codebase:**
 
-## Suggested skills
+```
+state.engine: Mutex<Option<Engine>>
+```
 
-- `pichyycode` for any UI/settings work and build verification.
-- `handoff` again when passing this project to another session.
-- `skill-installer` only when adding another global Codex skill.
+| Thread | Allowed to hold lock? | Duration |
+|--------|----------------------|----------|
+| `generate_chat` (user message) | ✅ Yes | Full generation duration |
+| `generate_session_title` | ❌ Never during HTTP | Read endpoint → drop immediately |
+| `run_after_turn_extraction` | ❌ Never | Receives endpoint as parameter |
+| `run_session_end_extraction` | ❌ Never | Receives endpoint as parameter |
 
+**Pattern — how to add any new background worker:**
+
+```rust
+// 1. Read endpoint while you already hold the lock (e.g. inside generate_chat)
+let bg_endpoint = engine.endpoint().to_string();
+
+// 2. Drop ALL guards before spawning
+drop(current);   // MutexGuard for engine
+drop(memory);    // MutexGuard for conversation_memory
+
+// 3. Spawn thread — pass endpoint as owned String, no Mutex inside
+std::thread::spawn(move || {
+    my_worker::run(&app, &bg_endpoint, &session_id, ...);
+});
+```
+
+**Never call `try_lock()` in a background thread after `generate_chat` is running** — it will always fail because `generate_chat` holds the lock for the full generation duration.
+
+---
+
+## 4. Tiered Memory System
+
+### Memory Layers
+
+| Layer | File | Scope | Trigger |
+|-------|------|-------|---------|
+| Short-term | `short_term.rs` | Constraints active this session | After each turn |
+| Mid-term | `mid_term.rs` | Goals, decisions, plan steps | After each turn |
+| Long-term | `long_term.rs` | Durable user facts (filtered) | Session end |
+
+### Background Worker Flow
+
+1. `generate_chat` completes → saves assistant response to DB
+2. Reads `engine.endpoint()` (still holding lock)
+3. Drops lock, spawns `std::thread::spawn`
+4. `run_after_turn_extraction(app, endpoint, session_id, user_msg, assistant_msg)`:
+   - Sends prompt to `llama-server` via `reqwest::blocking` (direct HTTP, no Mutex)
+   - Parses JSON: `constraints`, `goals`, `decisions`, `plan_steps`
+   - Saves to SQLite via `short_term::save_extracted_constraints` / `mid_term::merge_extracted_memory`
+5. On session switch / new chat → frontend calls `trigger_session_end_memory` IPC
+6. `run_session_end_extraction(app, endpoint, session_id)`:
+   - Reads last 12 messages from DB
+   - Extracts `facts` + `session_summary`
+   - Saves via `long_term::process_extracted_facts` + `store::save_session_summary`
+
+### Prompt Engineering Notes for Local LLMs
+
+**DO NOT use bracketed meta-headers** like `[Active Session Constraints - Non-negotiable]` in system prompts — 3B–8B local models hallucinate meta-comments in response (e.g. `(Wait, I must remove the emoji!)`).
+
+**Use natural language headers instead:**
+```
+Important Instructions & Constraints:
+- Directive: Do not use emojis.
+
+User Profile & Background Context:
+- Preference: User communicates in Thai.
+
+Session Context & Progress:
+- Goal: Build AI Harness desktop app.
+```
+
+---
+
+## 5. Bugs Fixed This Session
+
+### Bug 1 — `streaming` state never reset (critical)
+**Symptom:** After any AI response, UI showed `+ Generating` with Stop button forever. Sending next message was impossible.
+
+**Root cause:** `setStreaming(true)` called in `sendMessage` but `setStreaming(false)` was **never called anywhere**.
+
+**Fix:** Added `setStreaming(false)` as the first line of the `finally` block in `sendMessage`.
+
+```diff
+  } finally {
++   setStreaming(false);
+    if (pendingAnimationFrame.current !== null) cancelAnimationFrame(pendingAnimationFrame.current);
+    flushPendingDelta();
+    if (streamAbort.current === controller) streamAbort.current = null;
+  }
+```
+
+---
+
+### Bug 2 — Memory worker always getting empty response (`expected value at line 1 column 1`)
+**Symptom:** `[memory-worker] After-turn JSON parse skipped: expected value at line 1 column 1` on every turn.
+
+**Root cause:** Background thread called `try_lock()` on `state.engine` **while `generate_chat` still held the lock** → always returned `Err(_)` → function returned empty string → JSON parse failed.
+
+**Fix:** Changed architecture so `worker.rs` functions **never touch the Mutex**:
+1. Read `engine.endpoint()` inside `generate_chat` while lock is still held
+2. Clone to owned `String`
+3. Drop all guards
+4. Spawn thread with endpoint as parameter
+
+```rust
+// In generate_chat (holds lock):
+let bg_endpoint = engine.endpoint().to_string();
+drop(current);
+drop(memory);
+std::thread::spawn(move || {
+    worker::run_after_turn_extraction(&bg_app, &bg_endpoint, &bg_session_id, ...);
+});
+```
+
+```rust
+// In worker.rs (no Mutex at all):
+pub fn run_after_turn_extraction(app: &AppHandle, endpoint: &str, ...) {
+    run_silent_generation(endpoint, &prompt, 512)
+}
+
+fn run_silent_generation(endpoint: &str, prompt: &str, max_tokens: u32) -> Result<String, String> {
+    reqwest::blocking::Client::new()
+        .post(format!("{}/v1/chat/completions", endpoint))
+        ...
+}
+```
+
+---
+
+### Bug 3 — Second message blocked by `generate_session_title` Mutex
+**Symptom:** Sending a follow-up message right after first response blocked indefinitely.
+
+**Root cause:** `generate_session_title` held `state.engine.lock()` for entire HTTP title generation request. Second `generate_chat` call blocked waiting for the same lock.
+
+**Fix:** `sessions.rs` now reads endpoint using `try_lock()` for <1μs, drops guard immediately, then makes HTTP call directly.
+
+---
+
+## 6. Build Status
+
+```
+cargo test    — 23/23 tests passing, 0 failures
+cargo check   — 0 errors, 0 warnings
+npx tsc --noEmit — 0 TypeScript errors
+```
+
+---
+
+## 7. Key Files Quick Reference
+
+| File | What to know |
+|------|-------------|
+| [`src/App.tsx`](../src/App.tsx) | Main UI — `sendMessage`, `streaming` state, `ContextDonutChart` |
+| [`src-tauri/src/commands/engine.rs`](../src-tauri/src/commands/engine.rs) | `generate_chat`, mutex/lock pattern, background thread spawn |
+| [`src-tauri/src/commands/sessions.rs`](../src-tauri/src/commands/sessions.rs) | `generate_session_title` (lock-free) |
+| [`src-tauri/src/engine/memory/worker.rs`](../src-tauri/src/engine/memory/worker.rs) | Background memory extraction — takes `endpoint: &str`, NO Mutex |
+| [`src-tauri/src/engine/memory/short_term.rs`](../src-tauri/src/engine/memory/short_term.rs) | Session constraints + turn expiry |
+| [`src-tauri/src/engine/memory/mid_term.rs`](../src-tauri/src/engine/memory/mid_term.rs) | Goals, decisions, plan steps |
+| [`src-tauri/src/engine/memory/long_term.rs`](../src-tauri/src/engine/memory/long_term.rs) | Durable facts, sensitivity filter |
+| [`src-tauri/src/state.rs`](../src-tauri/src/state.rs) | `EngineState` — Mutex definitions |
+
+---
+
+## 8. Next Steps / Known Gaps
+
+- [ ] **Verify memory extraction is working end-to-end** — run app, check terminal for `[memory-worker] after-turn: extracted N constraints` with N > 0
+- [ ] **Add debug UI panel** to view what memory was extracted per session (short/mid/long-term stored in DB)
+- [ ] **Tune extraction prompts** — current prompts may over-extract or miss constraints depending on model
+- [ ] **Session summary quality** — `session_summary` stored in DB but not yet surfaced in UI or used in context assembly
+- [ ] **Memory retrieval relevance** — `assemble_tiered_memory_prompts` could be smarter (semantic similarity vs. recency)
+- [ ] **Long-term fact deduplication** — `process_extracted_facts` appends rows; add merging/dedup logic
+- [ ] **UI for memory viewer** — let user inspect/edit/delete stored memory (privacy control)
+- [ ] **Context budget** — currently memory prompts are prepended without checking total token budget; could overflow on small models
+
+---
+
+## 9. Temporal Context (from previous session)
+
+- `TimeAuthority` in `time_manager.rs` combines OS clock + network IANA timezone
+- Network sources: `ipwho.is` → `timeapi.io` (timeout 3s, cache 15min, fallback 24h)
+- Only stores timezone ID, calibrated time, monotonic sync — no IP/location persisted
+- Every generation prepends a structured temporal system message
+
+---
+
+## 10. Docs Index
+
+| Document | Description |
+|----------|-------------|
+| [`handoff.md`](handoff.md) | This document |
+| [`master-plan.md`](master-plan.md) | Feature roadmap and design goals |
+| [`tiered-memory-system.md`](tiered-memory-system.md) | Memory system design spec |
+| [`adaptive-retrieval-orchestrator.md`](adaptive-retrieval-orchestrator.md) | Web search pipeline design |
+| [`handoff-2026-07-22-web-search.md`](handoff-2026-07-22-web-search.md) | Previous session — web search implementation |

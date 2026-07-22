@@ -3,7 +3,7 @@ use scraper::{Html, Selector};
 use std::{net::IpAddr, thread, time::Duration};
 
 const MAX_DOCUMENT_CHARS: usize = 12_000;
-const MAX_DOCUMENTS_TO_READ: usize = 6;
+const MAX_DOCUMENTS_TO_READ: usize = 12;
 
 pub fn enrich_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
     let handles = results

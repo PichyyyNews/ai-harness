@@ -1,20 +1,20 @@
 import { Children, isValidElement, type ComponentPropsWithoutRef, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, CaretRight, ChatCircleDots, Check, Copy, DownloadSimple, MagnifyingGlass, Minus, PencilSimple, Play, Plus, Square, Stop, Trash, X } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircleDots, Check, Code, Copy, DownloadSimple, FolderSimple, Gear, House, MagnifyingGlass, Minus, Palette, PencilSimple, Play, Plus, SidebarSimple, Square, Stop, Trash, User, UserPlus, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import logoUrl from "../logo.svg";
 import { Badge, Button, Card, Textarea, Toast } from "./components";
-import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, SessionDetail, SessionSummary, WebSource } from "./types";
+import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
 import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
 import styles from "./App.module.css";
 
 type Screen = "picker" | "chat";
 type MenuName = "File" | "Edit" | "View" | "Help";
 type WindowAction = "minimize" | "maximize" | "close";
-type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[] };
+type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[]; retrievalTrace?: RetrievalTraceEntry[] };
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return "Size unavailable";
@@ -37,6 +37,7 @@ const formatSessionTime = (timestamp: string) => {
 export default function App() {
   const [screen, setScreen] = useState<Screen>("picker");
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeMenu, setActiveMenu] = useState<MenuName | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [models, setModels] = useState<CatalogModel[]>([]);
@@ -134,6 +135,8 @@ export default function App() {
     <main className={styles.app} data-theme={theme}>
       <DesktopMenuBar
         activeMenu={activeMenu}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((prev) => !prev)}
         onMenuChange={setActiveMenu}
         onWindowError={setToast}
         onAction={(action) => {
@@ -175,7 +178,7 @@ export default function App() {
             }}
           />
         ) : activeModel ? (
-          <ChatWorkspace model={activeModel} newChatRequest={newChatRequest} onBack={() => setScreen("picker")} onNotify={setToast} />
+          <ChatWorkspace model={activeModel} newChatRequest={newChatRequest} sidebarCollapsed={sidebarCollapsed} onBack={() => setScreen("picker")} onNotify={setToast} />
         ) : null}
       </div>
 
@@ -193,12 +196,14 @@ async function startWindowDrag() { await invoke("start_window_dragging"); }
 
 interface DesktopMenuBarProps {
   activeMenu: MenuName | null;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
   onMenuChange: (menu: MenuName | null) => void;
   onWindowError: (message: string) => void;
   onAction: (action: "model-picker" | "workspace" | "light" | "dark" | "new-chat" | "about" | "shortcuts") => void;
 }
 
-function DesktopMenuBar({ activeMenu, onMenuChange, onWindowError, onAction }: DesktopMenuBarProps) {
+function DesktopMenuBar({ activeMenu, sidebarCollapsed, onToggleSidebar, onMenuChange, onWindowError, onAction }: DesktopMenuBarProps) {
   const reportWindowError = (label: string, error: unknown) => onWindowError(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
   const menus: Record<MenuName, Array<{ label: string; action: Parameters<DesktopMenuBarProps["onAction"]>[0] }>> = {
     File: [{ label: "New chat", action: "new-chat" }, { label: "Choose model", action: "model-picker" }],
@@ -207,7 +212,33 @@ function DesktopMenuBar({ activeMenu, onMenuChange, onWindowError, onAction }: D
     Help: [{ label: "About AI Harness", action: "about" }],
   };
   return <header className={styles.desktopMenuBar}>
-    <button className={styles.brand} onClick={() => onAction("model-picker")} aria-label="Open model picker"><img className={styles.brandLogo} src={logoUrl} alt="" /><span>AI Harness</span></button>
+    <button className={styles.brand} onClick={() => onAction("model-picker")} aria-label="Open model picker" title="AI Harness Home"><img className={styles.brandLogo} src={logoUrl} alt="AI Harness" /></button>
+    <div className={styles.topNavControls}>
+      <button
+        className={`${styles.navControlBtn} ${sidebarCollapsed ? styles.navControlActive : ""}`}
+        onClick={onToggleSidebar}
+        title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        aria-label="Toggle sidebar"
+      >
+        <SidebarSimple weight="light" />
+      </button>
+      <button
+        className={styles.navControlBtn}
+        onClick={() => onAction("model-picker")}
+        title="Back to Model Catalog"
+        aria-label="Go back"
+      >
+        <CaretLeft weight="light" />
+      </button>
+      <button
+        className={styles.navControlBtn}
+        onClick={() => onAction("workspace")}
+        title="Forward to Chat Workspace"
+        aria-label="Go forward"
+      >
+        <CaretRight weight="light" />
+      </button>
+    </div>
     <nav className={styles.menuList} aria-label="Application menu">
       {(Object.keys(menus) as MenuName[]).map((menu) => <div className={styles.menuGroup} key={menu}>
         <button className={`${styles.menuTrigger} ${activeMenu === menu ? styles.menuTriggerActive : ""}`} onClick={() => onMenuChange(activeMenu === menu ? null : menu)} aria-haspopup="menu" aria-expanded={activeMenu === menu}>{menu}</button>
@@ -279,9 +310,17 @@ function ModelPicker({ catalogLoading, detailsLoading, models, selectedModel, se
   </section>;
 }
 
-function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: InstalledModel; newChatRequest: number; onBack: () => void; onNotify: (message: string) => void }) {
+const getSessionInitial = (title: string) => {
+  const trimmed = title.trim();
+  if (!trimmed) return "C";
+  const firstChar = Array.from(trimmed)[0];
+  return firstChar ? firstChar.toUpperCase() : "C";
+};
+
+function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNotify }: { model: InstalledModel; newChatRequest: number; sidebarCollapsed: boolean; onBack: () => void; onNotify: (message: string) => void }) {
   const [starting, setStarting] = useState(false);
   const [engineStarted, setEngineStarted] = useState(false);
+  const [engineInfo, setEngineInfo] = useState<{ backend: string; gpuLayers: number; contextSize: number; runtimeRelease: string; fallbackReason?: string } | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -289,6 +328,14 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
   const [sessionQuery, setSessionQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [activeTab, setActiveTab] = useState<"home" | "code">("home");
+  const [showSearch, setShowSearch] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [profiles, setProfiles] = useState<{ id: string; name: string; tag: string }[]>([
+    { id: "default", name: "Pichyy", tag: "Local Profile" }
+  ]);
+  const [activeProfileId, setActiveProfileId] = useState("default");
+  const activeProfile = useMemo(() => profiles.find((p) => p.id === activeProfileId) ?? profiles[0], [profiles, activeProfileId]);
   const streamAbort = useRef<AbortController | null>(null);
   const transcript = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
@@ -306,16 +353,19 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
 
   const openSession = useCallback(async (sessionId: string) => {
     if (streaming) return;
+    if (activeSessionId && activeSessionId !== sessionId) {
+      void invoke("trigger_session_end_memory", { sessionId: activeSessionId }).catch(() => {});
+    }
     try {
       const detail = await invoke<SessionDetail>("get_session", { sessionId });
       setActiveSessionId(detail.session.id);
       setActiveSessionModelId(detail.session.modelId);
-      setMessages(detail.messages.map((message) => ({ role: message.role, content: message.content, process: message.thinkingSummary ? [message.thinkingSummary] : [], sources: message.webSources })));
+      setMessages(detail.messages.map((message) => ({ role: message.role, content: message.content, process: message.thinkingSummary ? [message.thinkingSummary] : [], sources: message.webSources, retrievalTrace: message.retrievalTrace })));
       if (detail.session.modelId && detail.session.modelId !== model.repoId) onNotify(`This chat was created with ${detail.session.modelId}. Select that model before continuing.`);
     } catch (error) {
       onNotify(`Could not open saved chat: ${String(error)}`);
     }
-  }, [model.repoId, onNotify, streaming]);
+  }, [activeSessionId, model.repoId, onNotify, streaming]);
 
   const flushPendingDelta = useCallback(() => {
     pendingAnimationFrame.current = null;
@@ -335,6 +385,9 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
   }, [refreshSessions, sessionQuery]);
   useEffect(() => {
     if (streaming) return;
+    if (activeSessionId) {
+      void invoke("trigger_session_end_memory", { sessionId: activeSessionId }).catch(() => {});
+    }
     setActiveSessionId(null);
     setActiveSessionModelId(undefined);
     setMessages([]);
@@ -374,6 +427,7 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
     setStarting(true);
     try {
       const info = await invoke<{ backend: string; gpuLayers: number; contextSize: number; runtimeRelease: string; fallbackReason?: string }>("start_engine", { modelFile: model.localFile });
+      setEngineInfo(info);
       setEngineStarted(true);
       onNotify(info.fallbackReason ?? `Local ${info.backend.toUpperCase()} engine is ready (${info.gpuLayers === -1 ? "maximum safe GPU offload" : `${info.gpuLayers} GPU layers`}, ${info.contextSize}-token context).`);
     } catch (error) {
@@ -415,6 +469,10 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
 
   const startNewChat = () => {
     if (streaming) return;
+    if (activeSessionId) {
+      void invoke("trigger_session_end_memory", { sessionId: activeSessionId })
+        .catch((error) => onNotify(`Could not finalize chat memory: ${String(error)}`));
+    }
     setActiveSessionId(null);
     setActiveSessionModelId(undefined);
     setMessages([]);
@@ -438,7 +496,7 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
     const userMessage: ConversationMessage = { role: "user", content };
     const requestMessages = [...messages, userMessage];
     setDraft("");
-    setMessages([...requestMessages, { role: "assistant", content: "", process: ["Preparing local response"] }]);
+    setMessages([...requestMessages, { role: "assistant", content: "", process: ["Starting request and checking what needs live information"], retrievalTrace: [] }]);
     setStreaming(true);
     pendingDelta.current = "";
     const controller = new AbortController();
@@ -463,13 +521,20 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
             ? { ...message, process: message.process?.at(-1) === status ? message.process : [...(message.process ?? []), status] }
             : message));
         },
+        onRetrievalTrace: (entry) => {
+          setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
+            ? { ...message, retrievalTrace: [...(message.retrievalTrace ?? []), entry] }
+            : message));
+        },
       });
-      if (result?.finishReason === "repetition_detected") {
-        onNotify("A repetitive output loop was stopped and its repeated tail was removed.");
-      }
       if (result?.sources.length) {
         setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
           ? { ...message, sources: result.sources }
+          : message));
+      }
+      if (result?.retrievalTrace.length) {
+        setMessages((current) => current.map((message, index) => index === current.length - 1 && message.role === "assistant"
+          ? { ...message, retrievalTrace: result.retrievalTrace }
           : message));
       }
       await refreshSessions();
@@ -482,30 +547,221 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
         onNotify(`Message failed: ${String(error)}`);
       }
     } finally {
+      setStreaming(false);
       if (pendingAnimationFrame.current !== null) cancelAnimationFrame(pendingAnimationFrame.current);
       flushPendingDelta();
       if (streamAbort.current === controller) streamAbort.current = null;
-      setStreaming(false);
     }
   };
 
-  return <section className={styles.workspace} aria-label="Chat workspace">
-    <aside className={styles.sidebar}>
+  const usedChars = messages.reduce((acc, m) => acc + m.content.length, 0) + draft.length;
+  const maxContextTokens = engineInfo?.contextSize ?? 8192;
+
+  return <section className={`${styles.workspace} ${sidebarCollapsed ? styles.workspaceCollapsed : ""}`} aria-label="Chat workspace">
+    <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ""}`} aria-label="Sidebar navigation">
+      <div className={styles.sidebarHeader}>
+        <nav className={styles.topPillNav} aria-label="Navigation modes">
+          <button
+            type="button"
+            className={`${styles.tabPill} ${activeTab === "home" ? styles.tabPillActive : ""}`}
+            onClick={() => setActiveTab("home")}
+            title="Home"
+          >
+            <House weight="light" />
+            <span>Home</span>
+          </button>
+          <button
+            type="button"
+            className={`${styles.tabPill} ${activeTab === "code" ? styles.tabPillActive : ""}`}
+            onClick={() => {
+              setActiveTab("code");
+              onNotify("Code mode coming soon!");
+            }}
+            title="Code (Coming soon)"
+          >
+            <Code weight="light" />
+            <span>Code</span>
+          </button>
+        </nav>
+      </div>
+
       <div className={styles.sidebarContent}>
-        <Button fullWidth size="sm" iconPrefix={<Plus />} onClick={startNewChat} disabled={streaming}>New chat</Button>
+        <Button
+          fullWidth
+          size="sm"
+          iconPrefix={<Plus weight="light" />}
+          onClick={startNewChat}
+          disabled={streaming}
+          title="New chat"
+        >
+          {!sidebarCollapsed && "New chat"}
+        </Button>
+
+        <div className={styles.sidebarNavGroup}>
+          <button
+            type="button"
+            className={styles.sidebarNavItem}
+            onClick={() => onNotify("Projects feature coming soon")}
+            title="Projects"
+          >
+            <FolderSimple weight="light" />
+            <span>Projects</span>
+          </button>
+          <button
+            type="button"
+            className={styles.sidebarNavItem}
+            onClick={() => onNotify("Artifacts feature coming soon")}
+            title="Artifacts"
+          >
+            <Palette weight="light" />
+            <span>Artifacts</span>
+          </button>
+          <button
+            type="button"
+            className={styles.sidebarNavItem}
+            onClick={onBack}
+            title="Customize / Change model"
+          >
+            <Gear weight="light" />
+            <span>Customize</span>
+          </button>
+        </div>
+
         <section className={styles.sessionBrowser} aria-label="Saved chats">
-          <div className={styles.sessionSearch}><MagnifyingGlass aria-hidden="true" /><input value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} placeholder="Search chats" aria-label="Search saved chats" /></div>
-          <span className={styles.sidebarEyebrow}>Recents</span>
+          <div className={styles.recentsHeader}>
+            <span className={styles.sidebarEyebrow}>Recents</span>
+            <button
+              type="button"
+              className={`${styles.filterToggleBtn} ${showSearch ? styles.filterToggleBtnActive : ""}`}
+              onClick={() => setShowSearch((prev) => !prev)}
+              title="Search & Filter Recents"
+              aria-label="Filter recents"
+            >
+              <MagnifyingGlass weight="bold" />
+            </button>
+          </div>
+
+          {showSearch && (
+            <div className={styles.sessionSearch}>
+              <MagnifyingGlass aria-hidden="true" />
+              <input
+                value={sessionQuery}
+                onChange={(event) => setSessionQuery(event.target.value)}
+                placeholder="Search chats..."
+                aria-label="Search saved chats"
+              />
+            </div>
+          )}
+
           <div className={styles.sessionList}>
-            {!sessions.length && <p className={styles.emptySessions}>{sessionQuery ? "No chats found" : "Your saved chats will appear here"}</p>}
-            {sessions.map((session) => <div className={`${styles.sessionItem} ${activeSessionId === session.id ? styles.sessionItemActive : ""}`} key={session.id}>
-              <button className={styles.sessionOpen} onClick={() => void openSession(session.id)} disabled={streaming} aria-current={activeSessionId === session.id ? "page" : undefined}><span>{session.title}</span><small>{formatSessionTime(session.updatedAt)}</small></button>
-              <div className={styles.sessionActions}><button type="button" onClick={() => void renameSession(session)} aria-label={`Rename ${session.title}`}><PencilSimple /></button><button type="button" onClick={() => void deleteSession(session)} aria-label={`Delete ${session.title}`}><Trash /></button></div>
-            </div>)}
+            {!sessions.length && (
+              <p className={styles.emptySessions}>
+                {sessionQuery ? "No chats found" : "Saved chats will appear here"}
+              </p>
+            )}
+            {sessions.map((session) => (
+              <div
+                className={`${styles.sessionItem} ${activeSessionId === session.id ? styles.sessionItemActive : ""}`}
+                key={session.id}
+                title={sidebarCollapsed ? session.title : undefined}
+              >
+                <div className={styles.sessionAvatar} title={session.title}>
+                  {getSessionInitial(session.title)}
+                </div>
+                <button
+                  type="button"
+                  className={styles.sessionOpen}
+                  onClick={() => void openSession(session.id)}
+                  disabled={streaming}
+                  aria-current={activeSessionId === session.id ? "page" : undefined}
+                  title={session.title}
+                >
+                  <span>{session.title}</span>
+                  <small>{formatSessionTime(session.updatedAt)}</small>
+                </button>
+                <div className={styles.sessionActions}>
+                  <button type="button" onClick={() => void renameSession(session)} aria-label={`Rename ${session.title}`}>
+                    <PencilSimple />
+                  </button>
+                  <button type="button" onClick={() => void deleteSession(session)} aria-label={`Delete ${session.title}`}>
+                    <Trash />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       </div>
-      <Button variant="secondary" size="sm" onClick={onBack}>Change model</Button>
+
+      <div className={styles.sidebarFooter}>
+        <div className={styles.profileRow}>
+          <button
+            type="button"
+            className={styles.profileTrigger}
+            onClick={() => setProfileMenuOpen((prev) => !prev)}
+            title={`${activeProfile.name} (${activeProfile.tag})`}
+            aria-expanded={profileMenuOpen}
+          >
+            <div className={styles.profileInfo}>
+              <div className={styles.profileAvatar}>{activeProfile.name.charAt(0).toUpperCase()}</div>
+              <div className={styles.profileText}>
+                <span className={styles.profileName}>{activeProfile.name}</span>
+                <span className={styles.profileTag}>{activeProfile.tag}</span>
+              </div>
+            </div>
+            {profileMenuOpen ? <CaretUp weight="bold" /> : <CaretDown weight="bold" />}
+          </button>
+
+          {profileMenuOpen && (
+            <div className={styles.profileMenu}>
+              <button
+                type="button"
+                className={styles.profileMenuItem}
+                onClick={() => {
+                  setProfileMenuOpen(false);
+                  const name = prompt("Enter new local profile name:");
+                  if (name && name.trim()) {
+                    const newP = { id: String(Date.now()), name: name.trim(), tag: "Local Profile" };
+                    setProfiles((prev) => [...prev, newP]);
+                    setActiveProfileId(newP.id);
+                    onNotify(`Switched to new profile: ${newP.name}`);
+                  }
+                }}
+              >
+                <UserPlus weight="bold" />
+                <span>Create Local Profile</span>
+              </button>
+              {profiles.map((p) => (
+                <button
+                  type="button"
+                  key={p.id}
+                  className={styles.profileMenuItem}
+                  onClick={() => {
+                    setActiveProfileId(p.id);
+                    setProfileMenuOpen(false);
+                    onNotify(`Active profile: ${p.name}`);
+                  }}
+                >
+                  <User weight={p.id === activeProfileId ? "fill" : "regular"} />
+                  <span>{p.name} {p.id === activeProfileId ? "(Active)" : ""}</span>
+                </button>
+              ))}
+              <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "4px 0" }} />
+              <button
+                type="button"
+                className={styles.profileMenuItem}
+                onClick={() => {
+                  setProfileMenuOpen(false);
+                  onBack();
+                }}
+              >
+                <Gear weight="bold" />
+                <span>Change Model / Settings</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </aside>
     <div className={styles.chatPanel}>
       <div className={styles.transcriptRegion}>
@@ -514,7 +770,7 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
         {messages.map((message, index) => {
           const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
           return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
-            {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} streaming={isStreamingMessage} />}
+            {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} streaming={isStreamingMessage} />}
             {message.role === "assistant" ? <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} /> : <p>{message.content}</p>}
           </article>;
         })}
@@ -522,14 +778,71 @@ function ChatWorkspace({ model, newChatRequest, onBack, onNotify }: { model: Ins
       {!isAtBottom && messages.length > 0 && <Button type="button" variant="secondary" className={styles.scrollToLatest} aria-label="Scroll to latest message" onClick={() => scrollToLatest()}><ArrowDown weight="bold" /></Button>}
       </div>
       <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-        <Textarea aria-label="Message the model" placeholder={engineStarted ? "Message AI Harness" : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted || streaming} rows={2} />
+        <Textarea aria-label="Message the model" placeholder={engineStarted ? "Message AI Harness" : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted} rows={2} />
         <div className={styles.composerFooter}>
           <div className={styles.composerMeta}><Plus aria-hidden="true" /><span>{streaming ? "Generating" : engineStarted ? "Local engine" : "Engine offline"}</span></div>
-          {streaming ? <Button type="button" variant="secondary" className={styles.composerRoundAction} iconPrefix={<Stop weight="fill" />} onClick={() => streamAbort.current?.abort()} aria-label="Stop generating" /> : <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />}
+          <div className={styles.composerRightActions}>
+            <ContextDonutChart usedChars={usedChars} maxTokens={maxContextTokens} />
+            {streaming ? <Button type="button" variant="secondary" className={styles.composerRoundAction} iconPrefix={<Stop weight="fill" />} onClick={() => streamAbort.current?.abort()} aria-label="Stop generating" /> : <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />}
+          </div>
         </div>
       </form>
     </div>
   </section>;
+}
+
+function ContextDonutChart({ usedChars = 0, maxTokens = 8192 }: { usedChars?: number; maxTokens?: number }) {
+  const safeUsedChars = Math.max(0, usedChars || 0);
+  const safeMaxTokens = Math.max(1, maxTokens || 8192);
+  const estimatedTokens = Math.ceil(safeUsedChars / 3.8);
+  const percentage = Math.min(100, Math.round((estimatedTokens / safeMaxTokens) * 100));
+
+  const radius = 9;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+
+  const color =
+    percentage >= 85
+      ? "#ef4444"
+      : percentage >= 65
+      ? "#f59e0b"
+      : "var(--accent, #10b981)";
+
+  return (
+    <div
+      className={styles.contextDonutWrapper}
+      tabIndex={0}
+      role="region"
+      aria-label={`Context usage: ${percentage}%`}
+    >
+      <svg className={styles.contextDonutSvg} viewBox="0 0 24 24">
+        <circle className={styles.contextDonutBg} cx="12" cy="12" r={radius} />
+        <circle
+          className={styles.contextDonutMeter}
+          cx="12"
+          cy="12"
+          r={radius}
+          style={{
+            stroke: color,
+            strokeDasharray: circumference,
+            strokeDashoffset: strokeDashoffset,
+          }}
+        />
+      </svg>
+      <div className={styles.contextTooltip}>
+        <div className={styles.contextTooltipHeader}>
+          <span>Context Window</span>
+          <span>{percentage}%</span>
+        </div>
+        <div className={styles.contextTooltipValue}>
+          {estimatedTokens.toLocaleString()} / {safeMaxTokens.toLocaleString()} tokens
+        </div>
+        <div className={styles.contextTooltipSub}>
+          ~{safeUsedChars.toLocaleString()} characters used
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
@@ -558,13 +871,47 @@ function CitationLink(sources: WebSource[]) {
   };
 }
 
-function ThinkingSummary({ process, streaming }: { process: string[]; streaming: boolean }) {
-  if (!process.length && !streaming) return null;
-  const latest = process.at(-1) ?? "Preparing local response";
+function ThinkingSummary({ process, retrievalTrace, streaming }: { process: string[]; retrievalTrace: RetrievalTraceEntry[]; streaming: boolean }) {
+  if (!process.length && !retrievalTrace.length && !streaming) return null;
+  const latest = process.at(-1) ?? "Starting request";
   return <details className={styles.thinkingSummary}>
     <summary><CaretRight aria-hidden="true" weight="bold" /><span>{latest}</span>{streaming && <i aria-label="In progress" />}</summary>
-    <div>{process.map((stage, index) => <p key={`${stage}-${index}`}>{stage}</p>)}</div>
+    {!!process.length && <div className={styles.processSteps}>{process.map((stage, index) => <p key={`${stage}-${index}`}>{stage}</p>)}</div>}
+    {!!retrievalTrace.length && <RetrievalTrace entries={retrievalTrace} />}
   </details>;
+}
+
+function RetrievalTrace({ entries }: { entries: RetrievalTraceEntry[] }) {
+  return <details className={styles.retrievalTrace} open>
+    <summary><CaretRight aria-hidden="true" weight="bold" />Live retrieval trace · {entries.length} records</summary>
+    <p className={styles.traceDisclosure}>Public APIs, every candidate before filtering, ranking decisions, and final grounding. Secrets and request headers are never stored.</p>
+    <ol className={styles.traceList}>
+      {entries.map((entry, index) => {
+        const endpointIsLink = isOpenableUrl(entry.endpoint);
+        const sourceIsLink = isOpenableUrl(entry.url);
+        return <li className={styles.traceEntry} key={`${entry.stage}-${entry.provider}-${entry.url ?? entry.endpoint ?? "request"}-${index}`}>
+          <div className={styles.traceMeta}>
+            <strong>{entry.stage}</strong>
+            <span>{entry.provider}</span>
+            <em className={styles.traceDecision}>{entry.decision}</em>
+            {typeof entry.score === "number" && <em className={styles.traceScore}>score {entry.score.toFixed(3)}</em>}
+          </div>
+          {entry.endpoint && (endpointIsLink
+            ? <a className={styles.traceLink} href={entry.endpoint} target="_blank" rel="noreferrer">API: {entry.endpoint}</a>
+            : <span className={styles.traceEndpoint}>API: {entry.endpoint}</span>)}
+          {entry.url && (sourceIsLink
+            ? <a className={styles.traceLink} href={entry.url} target="_blank" rel="noreferrer">{entry.title ?? entry.url}</a>
+            : <span className={styles.traceEndpoint}>{entry.title ?? entry.url}</span>)}
+          {entry.preview && <p className={styles.tracePreview}>{entry.preview}</p>}
+          {entry.detail && <p className={styles.traceDetail}>{entry.detail}</p>}
+        </li>;
+      })}
+    </ol>
+  </details>;
+}
+
+function isOpenableUrl(value?: string) {
+  return !!value && /^https?:\/\//i.test(value);
 }
 
 function CodeBlock({ children }: ComponentPropsWithoutRef<"pre">) {

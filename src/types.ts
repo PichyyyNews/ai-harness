@@ -36,6 +36,9 @@ export type BackendPreference = "auto" | "cpu" | "cuda" | "vulkan" | "sycl";
 export interface EngineSettings {
   backend: BackendPreference;
   gpuLayers: number;
+  memoryAgentEnabled?: boolean;
+  memoryInjectionEnabled?: boolean;
+  memoryAgentEndpoint?: string;
 }
 
 export interface HardwareProfile {
@@ -61,6 +64,7 @@ export interface SessionMessage {
   thinkingSummary?: string;
   finishReason?: string;
   webSources?: WebSource[];
+  retrievalTrace?: RetrievalTraceEntry[];
   createdAt: string;
   sequence: number;
 }
@@ -75,4 +79,16 @@ export interface WebSource {
   id: number;
   title: string;
   url: string;
+}
+
+export interface RetrievalTraceEntry {
+  stage: string;
+  provider: string;
+  endpoint?: string;
+  title?: string;
+  url?: string;
+  preview?: string;
+  score?: number;
+  decision: string;
+  detail?: string;
 }

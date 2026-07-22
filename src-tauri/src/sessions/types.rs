@@ -1,5 +1,5 @@
 use serde::Serialize;
-use crate::web_search::WebSource;
+use crate::web_search::{RetrievalTraceEntry, WebSource};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +20,7 @@ pub struct SessionMessage {
     pub thinking_summary: Option<String>,
     pub finish_reason: Option<String>,
     pub web_sources: Option<Vec<WebSource>>,
+    pub retrieval_trace: Option<Vec<RetrievalTraceEntry>>,
     pub created_at: String,
     pub sequence: i64,
 }

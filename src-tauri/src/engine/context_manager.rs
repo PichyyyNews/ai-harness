@@ -6,6 +6,8 @@ const DEFAULT_RESPONSE_TOKENS: u32 = 1_024;
 const MAX_RESPONSE_TOKENS: u32 = 1_536;
 const MIN_RESPONSE_TOKENS: u32 = 256;
 const MAX_AUTO_CONTINUATIONS: usize = 3;
+const MIN_MEMORY_TOKENS: u32 = 256;
+const MAX_MEMORY_TOKENS: u32 = 768;
 
 #[derive(Default)]
 pub struct ConversationMemory {
@@ -37,6 +39,7 @@ struct ContextBudget {
     prompt_tokens: u32,
     response_tokens: u32,
     web_tokens: u32,
+    memory_tokens: u32,
 }
 
 /// The retriever asks for an amount of text that scales with the active model
@@ -48,7 +51,12 @@ pub fn web_context_char_budget(context_size: u32) -> usize {
     (web_tokens as usize).saturating_mul(4)
 }
 
-fn dynamic_budget(context_size: u32, requested_tokens: u32, has_web: bool) -> ContextBudget {
+fn dynamic_budget(
+    context_size: u32,
+    requested_tokens: u32,
+    has_web: bool,
+    has_memory: bool,
+) -> ContextBudget {
     let safety_margin = (context_size.saturating_mul(SAFETY_MARGIN_PERCENT) / 100).max(128);
     let usable = context_size.saturating_sub(safety_margin);
     let minimum_response = (context_size / 10).clamp(MIN_RESPONSE_TOKENS, 640);
@@ -64,27 +72,35 @@ fn dynamic_budget(context_size: u32, requested_tokens: u32, has_web: bool) -> Co
     } else {
         0
     };
+    let memory_tokens = if has_memory {
+        (prompt_tokens.saturating_mul(18) / 100).clamp(MIN_MEMORY_TOKENS, MAX_MEMORY_TOKENS)
+    } else {
+        0
+    };
     ContextBudget {
         safety_margin,
         prompt_tokens,
         response_tokens,
         web_tokens,
+        memory_tokens,
     }
 }
 
 /// Runs every chat turn behind the Tauri command. The frontend supplies the
 /// visible conversation, while this module applies model-tokenizer accounting,
 /// a safety margin, invisible sliding-window compaction, and bounded recovery.
-pub fn generate_with_recovery<F>(
+pub fn generate_with_recovery<F, P>(
     engine: &mut Engine,
     request: ChatRequest,
     memory: &mut ConversationMemory,
     time_context: &time_manager::TimeContext,
     mut emit: F,
+    mut observe_prepared_request: P,
     should_cancel: impl Fn() -> bool,
 ) -> Result<GenerationResult, String>
 where
     F: FnMut(super::runtime::GenerationEvent) -> Result<(), String>,
+    P: FnMut(&ChatRequest),
 {
     let mut history = time_manager::inject_gap_markers(&request.messages);
     let requested_tokens = request.max_tokens.unwrap_or(DEFAULT_RESPONSE_TOKENS);
@@ -156,6 +172,7 @@ where
         emit(super::runtime::GenerationEvent::Status(
             "Writing response".to_string(),
         ))?;
+        observe_prepared_request(&prepared.request);
         let result = engine.generate(prepared.request, |event| emit(event), &should_cancel)?;
         full_output.push_str(&result.content);
 
@@ -165,6 +182,7 @@ where
                     content: full_output,
                     finish_reason: result.finish_reason,
                     sources: Vec::new(),
+                    retrieval_trace: Vec::new(),
                 });
             }
             FinishReason::Length if continuation == MAX_AUTO_CONTINUATIONS => {
@@ -172,6 +190,7 @@ where
                     content: full_output,
                     finish_reason: FinishReason::Length,
                     sources: Vec::new(),
+                    retrieval_trace: Vec::new(),
                 });
             }
             FinishReason::Length => {
@@ -205,7 +224,8 @@ fn prepare_request(
 ) -> Result<PreparedRequest, String> {
     let context = engine.context_size();
     let has_web = history.iter().any(is_web_context);
-    let budget = dynamic_budget(context, requested_tokens, has_web);
+    let has_memory = history.iter().any(is_memory_context);
+    let budget = dynamic_budget(context, requested_tokens, has_web, has_memory);
 
     let mut kept = vec![time_manager::system_message(time_context)];
     for message in history.iter().filter(|message| message.role == "system") {
@@ -214,6 +234,11 @@ fn prepare_request(
             message.content = truncate_utf8(
                 &message.content,
                 (budget.web_tokens as usize).saturating_mul(4),
+            );
+        } else if message.content.starts_with("[Memory Directives]") {
+            message.content = truncate_utf8(
+                &message.content,
+                (budget.memory_tokens as usize).saturating_mul(4),
             );
         }
         kept.push(message);
@@ -228,7 +253,12 @@ fn prepare_request(
             created_at: None,
         });
     }
-    fit_system_context(engine, &mut kept, budget.prompt_tokens);
+    fit_system_context(
+        engine,
+        &mut kept,
+        budget.prompt_tokens,
+        budget.memory_tokens,
+    );
     let mut used = engine.count_messages_tokens(&kept);
     let non_system = history
         .iter()
@@ -311,7 +341,17 @@ fn is_web_context(message: &ChatMessage) -> bool {
     message.content.starts_with("[Retrieved Web Sources]")
 }
 
-fn fit_system_context(engine: &Engine, kept: &mut Vec<ChatMessage>, prompt_budget: u32) {
+fn is_memory_context(message: &ChatMessage) -> bool {
+    message.content.starts_with("[Memory Directives]")
+        || message.content.starts_with("[Active Memory Reminder]")
+}
+
+fn fit_system_context(
+    engine: &Engine,
+    kept: &mut Vec<ChatMessage>,
+    prompt_budget: u32,
+    memory_tokens: u32,
+) {
     while engine.count_messages_tokens(kept) > prompt_budget {
         if shrink_message(kept, "Conversation memory (private, compact):", 800) {
             continue;
@@ -319,8 +359,40 @@ fn fit_system_context(engine: &Engine, kept: &mut Vec<ChatMessage>, prompt_budge
         if shrink_message(kept, "[Retrieved Web Sources]", 1_200) {
             continue;
         }
+        // Only the expanded memory context is compressible, and never below
+        // its reserved floor. The active reminder itself is non-trimmable.
+        if shrink_message_to_floor(
+            kept,
+            "[Memory Directives]",
+            (memory_tokens as usize).saturating_mul(3),
+        ) {
+            continue;
+        }
         break;
     }
+}
+
+fn shrink_message_to_floor(
+    messages: &mut Vec<ChatMessage>,
+    prefix: &str,
+    minimum_bytes: usize,
+) -> bool {
+    let Some(message) = messages
+        .iter_mut()
+        .find(|message| message.content.starts_with(prefix))
+    else {
+        return false;
+    };
+    if message.content.len() <= minimum_bytes {
+        return false;
+    }
+    let target = (message.content.len().saturating_mul(3) / 4).max(minimum_bytes);
+    let shortened = truncate_utf8(&message.content, target);
+    if shortened == message.content {
+        return false;
+    }
+    message.content = shortened;
+    true
 }
 
 fn shrink_message(messages: &mut Vec<ChatMessage>, prefix: &str, minimum_bytes: usize) -> bool {
@@ -430,4 +502,31 @@ fn truncate_tail(value: &str, max_bytes: usize) -> String {
         start += 1;
     }
     format!("{prefix}{}", &value[start..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserves_nonzero_memory_budget_under_context_pressure() {
+        let budget = dynamic_budget(4_096, 1_536, true, true);
+        assert!(budget.memory_tokens >= MIN_MEMORY_TOKENS);
+    }
+
+    #[test]
+    fn memory_floor_is_never_removed() {
+        let original = "[Memory Directives]\nYou MUST answer in Thai.".to_string();
+        let mut messages = vec![ChatMessage {
+            role: "system".to_string(),
+            content: original.clone(),
+            created_at: None,
+        }];
+        assert!(!shrink_message_to_floor(
+            &mut messages,
+            "[Memory Directives]",
+            256
+        ));
+        assert_eq!(messages[0].content, original);
+    }
 }

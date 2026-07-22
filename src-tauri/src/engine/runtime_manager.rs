@@ -87,6 +87,19 @@ pub fn ensure(backend: BackendPreference, root: &Path) -> Result<RuntimeFiles, S
     if has_required_backend_files(&directory, backend) {
         return Ok(RuntimeFiles { server: directory.join(server_name()), directory, release: "cached".to_string() });
     }
+    // Older AI Harness builds installed the CPU runtime directly in
+    // `backends/`, before runtimes were split into backend-specific folders.
+    // Reuse that verified installation instead of downloading the same
+    // llama.cpp archive again just to start the embedding sidecar.
+    if matches!(backend, BackendPreference::Cpu | BackendPreference::Auto)
+        && has_required_backend_files(root, BackendPreference::Cpu)
+    {
+        return Ok(RuntimeFiles {
+            server: root.join(server_name()),
+            directory: root.to_path_buf(),
+            release: "cached-legacy-cpu".to_string(),
+        });
+    }
 
     let release = fetch_latest_release()?;
     let suffix = asset_suffix(backend)?;

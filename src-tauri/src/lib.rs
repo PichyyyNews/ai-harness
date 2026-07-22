@@ -1,5 +1,6 @@
 mod commands;
 mod engine;
+mod language_classifier;
 mod models;
 mod sessions;
 mod state;
@@ -21,6 +22,7 @@ pub fn run() {
             commands::engine::generate_chat,
             commands::engine::stop_generation,
             commands::engine::stop_engine,
+            commands::engine::trigger_session_end_memory,
             commands::sessions::create_session,
             commands::sessions::list_sessions,
             commands::sessions::get_session,

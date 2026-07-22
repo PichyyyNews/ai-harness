@@ -1,9 +1,8 @@
-//! Low-cost streaming circuit breaker for degenerate local-model output.
+//! Streaming circuit breaker for genuine degenerate local-model output.
 //!
-//! llama-server streams text fragments rather than tokenizer IDs.  The guard
-//! deliberately works on those fragments: it catches the common failure modes
-//! (a repeated emoji/token or a short repeated sequence) without introducing a
-//! second tokenizer or delaying the stream.
+//! llama-server is free to split one logical token into arbitrary SSE chunks.
+//! Looking for repeated *chunks* therefore falsely stops normal Thai/CJK and
+//! formatted answers. This guard examines the assembled Unicode text instead.
 
 #[derive(Debug, Clone)]
 pub struct RepetitionDetection {
@@ -14,83 +13,84 @@ pub struct RepetitionDetection {
 
 #[derive(Default)]
 pub struct RepetitionGuard {
-    pieces: Vec<String>,
+    recent: String,
 }
 
 impl RepetitionGuard {
-    const MAX_WINDOW: usize = 48;
-    const SINGLE_REPEAT_LIMIT: usize = 9;
-    const NGRAM_REPEAT_LIMIT: usize = 4;
+    const MAX_RECENT_CHARS: usize = 2_048;
+    const SINGLE_CHARACTER_REPEAT_LIMIT: usize = 9;
+    const PHRASE_REPEAT_LIMIT: usize = 4;
+    const MIN_PHRASE_CHARS: usize = 8;
+    const MAX_PHRASE_CHARS: usize = 160;
 
     pub fn observe(&mut self, piece: &str) -> Option<RepetitionDetection> {
-        let normalized = normalize(piece);
-        if normalized.is_empty() {
+        if piece.is_empty() {
             return None;
         }
+        self.recent.push_str(piece);
+        self.trim_recent_window();
 
-        self.pieces.push(piece.to_string());
-        if self.pieces.len() > Self::MAX_WINDOW {
-            self.pieces.remove(0);
-        }
-
-        let start = self.repeated_single_start().or_else(|| self.repeated_ngram_start())?;
-        // The final piece triggered detection and has not been emitted yet.
-        let emitted_suffix = self.pieces[start..self.pieces.len().saturating_sub(1)].concat();
+        let chars = self.recent.chars().collect::<Vec<_>>();
+        let start = repeated_character_start(&chars)
+            .or_else(|| repeated_phrase_start(&chars))?;
+        let emitted_suffix = chars[start..chars.len().saturating_sub(piece.chars().count())]
+            .iter()
+            .collect::<String>();
         Some(RepetitionDetection {
             emitted_suffix,
-            position: self.pieces.len(),
+            position: chars.len(),
         })
     }
 
-    fn repeated_single_start(&self) -> Option<usize> {
-        let last = normalize(self.pieces.last()?);
-        let mut count = 0;
-        for piece in self.pieces.iter().rev() {
-            if normalize(piece) == last {
-                count += 1;
+    fn trim_recent_window(&mut self) {
+        let char_count = self.recent.chars().count();
+        if char_count <= Self::MAX_RECENT_CHARS {
+            return;
+        }
+        self.recent = self
+            .recent
+            .chars()
+            .skip(char_count - Self::MAX_RECENT_CHARS)
+            .collect();
+    }
+}
+
+fn repeated_character_start(chars: &[char]) -> Option<usize> {
+    let last = *chars.last()?;
+    let mut count = 0;
+    for character in chars.iter().rev() {
+        if *character == last {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    (count >= RepetitionGuard::SINGLE_CHARACTER_REPEAT_LIMIT).then_some(chars.len() - count)
+}
+
+fn repeated_phrase_start(chars: &[char]) -> Option<usize> {
+    let max_width = RepetitionGuard::MAX_PHRASE_CHARS.min(chars.len() / RepetitionGuard::PHRASE_REPEAT_LIMIT);
+    for width in RepetitionGuard::MIN_PHRASE_CHARS..=max_width {
+        let end = chars.len();
+        let pattern_start = end - width;
+        let pattern = &chars[pattern_start..end];
+        if pattern.iter().all(|character| character.is_whitespace()) {
+            continue;
+        }
+        let mut repeats = 1;
+        while end >= width * (repeats + 1) {
+            let start = end - width * (repeats + 1);
+            if chars[start..start + width] == chars[pattern_start..end] {
+                repeats += 1;
             } else {
                 break;
             }
         }
-        (count >= Self::SINGLE_REPEAT_LIMIT).then_some(self.pieces.len() - count)
-    }
-
-    fn repeated_ngram_start(&self) -> Option<usize> {
-        for width in 2..=6 {
-            if self.pieces.len() < width * Self::NGRAM_REPEAT_LIMIT {
-                continue;
-            }
-            let pattern_start = self.pieces.len() - width;
-            let pattern: Vec<String> = self.pieces[pattern_start..]
-                .iter()
-                .map(|piece| normalize(piece))
-                .collect();
-            // A one-token loop is deliberately handled by the less-sensitive
-            // single-token threshold above, so legitimate repeated words and
-            // list punctuation do not trip the n-gram circuit breaker early.
-            if pattern.iter().any(String::is_empty) || pattern.windows(2).all(|pair| pair[0] == pair[1]) {
-                continue;
-            }
-            let mut repeats = 1;
-            while self.pieces.len() >= width * (repeats + 1) {
-                let start = self.pieces.len() - width * (repeats + 1);
-                let candidate = &self.pieces[start..start + width];
-                if candidate.iter().map(|piece| normalize(piece)).eq(pattern.iter().cloned()) {
-                    repeats += 1;
-                } else {
-                    break;
-                }
-            }
-            if repeats >= Self::NGRAM_REPEAT_LIMIT {
-                return Some(self.pieces.len() - repeats * width);
-            }
+        if repeats >= RepetitionGuard::PHRASE_REPEAT_LIMIT {
+            return Some(end - width * repeats);
         }
-        None
     }
-}
-
-fn normalize(piece: &str) -> String {
-    piece.trim().to_lowercase()
+    None
 }
 
 #[cfg(test)]
@@ -108,13 +108,19 @@ mod tests {
     }
 
     #[test]
-    fn catches_short_sequence_loop() {
+    fn catches_repeated_phrase_loop() {
         let mut guard = RepetitionGuard::default();
-        for _ in 0..3 {
-            assert!(guard.observe("A").is_none());
-            assert!(guard.observe("B").is_none());
+        assert!(guard.observe("ตอบอย่างกระชับ ").is_none());
+        assert!(guard.observe("ตอบอย่างกระชับ ").is_none());
+        assert!(guard.observe("ตอบอย่างกระชับ ").is_none());
+        assert!(guard.observe("ตอบอย่างกระชับ ").is_some());
+    }
+
+    #[test]
+    fn does_not_treat_repeated_stream_fragments_as_a_loop() {
+        let mut guard = RepetitionGuard::default();
+        for piece in ["การ", "ทด", "สอบ", "การ", "ทด", "สอบ", "การ", "ทด", "สอบ"] {
+            assert!(guard.observe(piece).is_none());
         }
-        assert!(guard.observe("A").is_none());
-        assert!(guard.observe("B").is_some());
     }
 }

@@ -13,7 +13,14 @@ pub fn toggle_maximize_window(window: tauri::WebviewWindow) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn close_window(window: tauri::WebviewWindow) -> Result<(), String> {
+pub fn close_window(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::state::EngineState>,
+) -> Result<(), String> {
+    // Tauri can terminate the process immediately after the last window is
+    // closed, before managed state destructors run. Stop both llama.cpp
+    // sidecars explicitly so a restart cannot leave orphan inference servers.
+    crate::commands::engine::stop_engine(state)?;
     window.close().map_err(|error| format!("Could not close window: {error}"))
 }
 

@@ -4,7 +4,7 @@ use super::{
     runtime_manager,
     settings::{BackendPreference, EngineSettings},
 };
-use crate::web_search::WebSource;
+use crate::web_search::{RetrievalTraceEntry, WebSource};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
@@ -70,6 +70,8 @@ pub struct GenerationResult {
     pub finish_reason: FinishReason,
     #[serde(default)]
     pub sources: Vec<WebSource>,
+    #[serde(default)]
+    pub retrieval_trace: Vec<RetrievalTraceEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +93,37 @@ const MIN_CONTEXT_SIZE: u32 = 4096;
 const MAX_CONTEXT_SIZE: u32 = 16_384;
 const DEFAULT_MAX_TOKENS: u32 = 1536;
 const VRAM_RESERVE_MIB: u64 = 768;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Sampling {
+    temperature: f32,
+    repeat_penalty: f32,
+    repeat_last_n: u32,
+    dry_multiplier: f32,
+    min_p: f32,
+}
+
+impl Sampling {
+    fn from_request(request: &ChatRequest) -> Self {
+        Self {
+            temperature: request.temperature.unwrap_or(0.75).clamp(0.0, 2.0),
+            repeat_penalty: 1.08,
+            repeat_last_n: 128,
+            dry_multiplier: 0.8,
+            min_p: 0.05,
+        }
+    }
+
+    fn for_retry(self) -> Self {
+        Self {
+            temperature: self.temperature.min(0.55),
+            repeat_penalty: self.repeat_penalty.max(1.18),
+            repeat_last_n: self.repeat_last_n.max(256),
+            dry_multiplier: self.dry_multiplier.max(1.2),
+            min_p: self.min_p.max(0.08),
+        }
+    }
+}
 
 fn reserve_local_port() -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -353,6 +386,9 @@ impl Engine {
     pub fn info(&self) -> EngineInfo {
         self.info.clone()
     }
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
     pub fn context_size(&self) -> u32 {
         self.info.context_size
     }
@@ -380,11 +416,63 @@ impl Engine {
     where
         F: FnMut(GenerationEvent) -> Result<(), String>,
     {
+        let initial_sampling = Sampling::from_request(&request);
+        let first = self.generate_attempt(
+            request.clone(),
+            &mut emit,
+            &should_cancel,
+            0,
+            initial_sampling,
+        )?;
+        if first.finish_reason != FinishReason::RepetitionDetected
+            || should_cancel()
+        {
+            return Ok(first);
+        }
+
+        // A model can still enter a genuine loop late in an otherwise useful
+        // answer. Remove that first draft and retry once with stronger
+        // repetition controls instead of exposing a loop warning to the user.
+        if !first.content.is_empty() {
+            emit(GenerationEvent::TrimSuffix(first.content))?;
+        }
+        let retry_sampling = initial_sampling.for_retry();
+        let mut retry_request = request;
+        retry_request.temperature = Some(retry_sampling.temperature);
+        self.generate_attempt(
+            retry_request,
+            &mut emit,
+            &should_cancel,
+            1,
+            retry_sampling,
+        )
+    }
+
+    fn generate_attempt<F, C>(
+        &mut self,
+        request: ChatRequest,
+        emit: &mut F,
+        should_cancel: &C,
+        retry_attempt: usize,
+        sampling: Sampling,
+    ) -> Result<GenerationResult, String>
+    where
+        F: FnMut(GenerationEvent) -> Result<(), String>,
+        C: Fn() -> bool,
+    {
         let payload = serde_json::json!({
             "messages": request.messages,
             "max_tokens": request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).clamp(1, DEFAULT_MAX_TOKENS),
-            "temperature": request.temperature.unwrap_or(0.75).clamp(0.0, 2.0),
+            "temperature": sampling.temperature,
+            "repeat_penalty": sampling.repeat_penalty,
+            "repeat_last_n": sampling.repeat_last_n,
+            "dry_multiplier": sampling.dry_multiplier,
+            "min_p": sampling.min_p,
             "stream": true,
+            // The Gemma model otherwise spends its output budget in a hidden
+            // reasoning stream before answering. Chat responses need direct
+            // user-visible text; background classifiers already use this flag.
+            "chat_template_kwargs": {"enable_thinking": false},
         });
         let response = reqwest::blocking::Client::new()
             .post(format!("{}/v1/chat/completions", self.endpoint))
@@ -432,10 +520,7 @@ impl Engine {
                         emit(GenerationEvent::TrimSuffix(detection.emitted_suffix))?;
                     }
                     finish_reason = FinishReason::RepetitionDetected;
-                    emit(GenerationEvent::Status(
-                        "Stopped a repetitive output loop".to_string(),
-                    ))?;
-                    self.log_repetition_abort(0, detection.position);
+                    self.log_repetition_abort(retry_attempt, detection.position, sampling);
                     break;
                 }
                 output.push_str(piece);
@@ -446,17 +531,23 @@ impl Engine {
             content: output,
             finish_reason,
             sources: Vec::new(),
+            retrieval_trace: Vec::new(),
         })
     }
 
-    pub fn log_repetition_abort(&self, retry_attempt: usize, position: usize) {
+    pub fn log_repetition_abort(
+        &self,
+        retry_attempt: usize,
+        position: usize,
+        sampling: Sampling,
+    ) {
         let entry = serde_json::json!({
             "timestamp": SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_secs()).unwrap_or_default(),
             "model": self.model_label,
             "event": "repetition_detected",
             "position": position,
             "retry_attempt": retry_attempt,
-            "sampling": { "repeat_penalty": 1.08, "repeat_last_n": 128, "dry_multiplier": 0.8, "min_p": 0.05, "temperature": 0.75 },
+            "sampling": { "repeat_penalty": sampling.repeat_penalty, "repeat_last_n": sampling.repeat_last_n, "dry_multiplier": sampling.dry_multiplier, "min_p": sampling.min_p, "temperature": sampling.temperature },
         });
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
