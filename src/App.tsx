@@ -14,7 +14,7 @@ import styles from "./App.module.css";
 type Screen = "picker" | "chat";
 type MenuName = "File" | "Edit" | "View" | "Help";
 type WindowAction = "minimize" | "maximize" | "close";
-type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[]; retrievalTrace?: RetrievalTraceEntry[] };
+type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[]; retrievalTrace?: RetrievalTraceEntry[]; isQueued?: boolean };
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return "Size unavailable";
@@ -342,6 +342,8 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const [isAtBottom, setIsAtBottom] = useState(true);
   const pendingDelta = useRef("");
   const pendingAnimationFrame = useRef<number | null>(null);
+  const [promptQueue, setPromptQueue] = useState<string[]>([]);
+  const promptQueueRef = useRef<string[]>([]);
 
   const refreshSessions = useCallback(async (query = sessionQuery) => {
     try {
@@ -479,9 +481,22 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     setDraft("");
   };
 
-  const sendMessage = async () => {
-    const content = draft.trim();
-    if (!content || !engineStarted || streaming) return;
+  const sendMessage = async (overrideContent?: string) => {
+    const content = (overrideContent ?? draft).trim();
+    if (!content || !engineStarted) return;
+
+    if (streaming) {
+      promptQueueRef.current = [...promptQueueRef.current, content];
+      setPromptQueue([...promptQueueRef.current]);
+      setDraft("");
+      setMessages((current) => [
+        ...current,
+        { role: "user", content, isQueued: true },
+      ]);
+      onNotify(`Prompt queued (#${promptQueueRef.current.length} in line)`);
+      return;
+    }
+
     if (activeSessionModelId && activeSessionModelId !== model.repoId) {
       onNotify(`This saved chat requires ${activeSessionModelId}. Change model before continuing.`);
       return;
@@ -493,10 +508,18 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       onNotify(`Could not create saved chat: ${String(error)}`);
       return;
     }
-    const userMessage: ConversationMessage = { role: "user", content };
-    const requestMessages = [...messages, userMessage];
+    const userMessage: ConversationMessage = { role: "user", content, isQueued: false };
     setDraft("");
-    setMessages([...requestMessages, { role: "assistant", content: "", process: ["Starting request and checking what needs live information"], retrievalTrace: [] }]);
+    setMessages((current) => {
+      const unqueued = current.map((m) => (m.content === content && m.isQueued ? { ...m, isQueued: false } : m));
+      const activeMsgs = unqueued.filter((m) => !m.isQueued);
+      if (!activeMsgs.some((m) => m.role === "user" && m.content === content)) {
+        activeMsgs.push(userMessage);
+      }
+      return [...activeMsgs, { role: "assistant", content: "", process: ["Starting request and checking what needs live information"], retrievalTrace: [] }];
+    });
+
+    const requestMessages = [...messages.filter((m) => !m.isQueued), userMessage];
     setStreaming(true);
     pendingDelta.current = "";
     const controller = new AbortController();
@@ -551,6 +574,14 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       if (pendingAnimationFrame.current !== null) cancelAnimationFrame(pendingAnimationFrame.current);
       flushPendingDelta();
       if (streamAbort.current === controller) streamAbort.current = null;
+
+      if (promptQueueRef.current.length > 0) {
+        const nextPrompt = promptQueueRef.current.shift()!;
+        setPromptQueue([...promptQueueRef.current]);
+        setTimeout(() => {
+          void sendMessage(nextPrompt);
+        }, 100);
+      }
     }
   };
 
@@ -771,19 +802,53 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
           return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
             {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} sources={message.sources ?? []} streaming={isStreamingMessage} />}
-            {message.role === "assistant" ? <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} /> : <p>{message.content}</p>}
+            {message.role === "assistant" ? (
+              <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} />
+            ) : (
+              <div className={styles.userMessageContent}>
+                <p>{message.content}</p>
+                {message.isQueued && <span className={styles.queuedBadge}>⏳ Queued</span>}
+              </div>
+            )}
           </article>;
         })}
       </div>
       {!isAtBottom && messages.length > 0 && <Button type="button" variant="secondary" className={styles.scrollToLatest} aria-label="Scroll to latest message" onClick={() => scrollToLatest()}><ArrowDown weight="bold" /></Button>}
       </div>
       <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-        <Textarea aria-label="Message the model" placeholder={engineStarted ? "Message AI Harness" : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted} rows={2} />
+        <Textarea aria-label="Message the model" placeholder={engineStarted ? (streaming ? "Type next prompt to queue..." : "Message AI Harness") : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted} rows={2} />
         <div className={styles.composerFooter}>
-          <div className={styles.composerMeta}><Plus aria-hidden="true" />{streaming ? <TextShimmerWave text="Generating response..." /> : <span>{engineStarted ? "Local engine" : "Engine offline"}</span>}</div>
+          <div className={styles.composerMeta}>
+            <Plus aria-hidden="true" />
+            {streaming ? <TextShimmerWave text="Generating response..." /> : <span>{engineStarted ? "Local engine" : "Engine offline"}</span>}
+            {promptQueue.length > 0 && <span className={styles.queueCountBadge}>{promptQueue.length} queued</span>}
+          </div>
           <div className={styles.composerRightActions}>
             <ContextDonutChart usedChars={usedChars} maxTokens={maxContextTokens} />
-            {streaming ? <Button type="button" variant="secondary" className={styles.composerRoundAction} iconPrefix={<Stop weight="fill" />} onClick={() => streamAbort.current?.abort()} aria-label="Stop generating" /> : <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />}
+            {streaming ? (
+              <div className={styles.streamingControlGroup}>
+                {draft.trim() && (
+                  <Button type="submit" size="sm" iconPrefix={<Plus weight="bold" />}>
+                    Queue ({promptQueue.length + 1})
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className={styles.composerRoundAction}
+                  iconPrefix={<Stop weight="fill" />}
+                  onClick={() => {
+                    promptQueueRef.current = [];
+                    setPromptQueue([]);
+                    streamAbort.current?.abort();
+                  }}
+                  aria-label="Stop generating and clear queue"
+                  title="Stop generating & clear queue"
+                />
+              </div>
+            ) : (
+              <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />
+            )}
           </div>
         </div>
       </form>
