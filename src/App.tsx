@@ -4,7 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowDown, ArrowUp, CaretDown, CaretLeft, CaretRight, CaretUp, ChatCircleDots, Check, Code, Copy, DownloadSimple, FolderSimple, Gear, House, MagnifyingGlass, Minus, Palette, PencilSimple, Play, Plus, SidebarSimple, Square, Stop, Trash, User, UserPlus, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import logoUrl from "../logo.svg";
 import { Badge, Button, Card, MorphingInfinity, Textarea, TextShimmerWave, Toast } from "./components";
 import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
@@ -937,16 +940,29 @@ function GlobeIcon({ domain }: { domain: string }) {
   );
 }
 
+function preprocessLatex(content: string) {
+  if (!content) return content;
+  return content
+    .split(/(```[\s\S]*?```|`[^`]+`)/g)
+    .map((part) => {
+      if (part.startsWith("```") || part.startsWith("`")) return part;
+      return part
+        .replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => `$$${math}$$`)
+        .replace(/\\\(([\s\S]*?)\\\)/g, (_, math) => `$${math}$`);
+    })
+    .join("");
+}
+
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
   if (!content) return <p>{streaming ? <MorphingInfinity label="Thinking…" /> : ""}</p>;
   return (
     <div className={styles.markdown}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeHighlight, rehypeKatex]}
         components={{ pre: CodeBlock, a: CitationLink(sources) }}
       >
-        {citationMarkdown(content, sources)}
+        {preprocessLatex(citationMarkdown(content, sources))}
       </ReactMarkdown>
       {!!sources.length && (
         <div className={styles.webSources} aria-label="Web sources">
