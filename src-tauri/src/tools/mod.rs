@@ -12,6 +12,31 @@ pub fn execute_tool(app: &AppHandle, name: &str, raw_args: &str) -> Result<Strin
     let clean_args = raw_args.trim();
 
     match clean_name {
+        "ask_user_choice" => {
+            #[derive(serde::Deserialize, serde::Serialize)]
+            struct ChoicePayload {
+                question: String,
+                options: Vec<String>,
+            }
+
+            let payload: ChoicePayload = serde_json::from_str(clean_args)
+                .unwrap_or_else(|_| ChoicePayload {
+                    question: parse_single_arg(clean_args).unwrap_or_else(|| "Please select an option to proceed:".to_string()),
+                    options: vec![
+                        "Option 1: Proceed with automatic plan".to_string(),
+                        "Option 2: Perform deep web research".to_string(),
+                        "Option 3: Custom adjustments".to_string(),
+                    ],
+                });
+
+            use tauri::Emitter;
+            let _ = app.emit("ai-choice-request", &payload);
+            Ok(format!(
+                "Interactive Choice UI displayed to user with question: \"{}\" and {} options. Awaiting user choice.",
+                payload.question,
+                payload.options.len()
+            ))
+        }
         "search_chat_history" => {
             let query = parse_single_arg(clean_args).unwrap_or(clean_args.to_string());
             history::search_chat_history(app, &query, 5)
@@ -72,6 +97,7 @@ fn parse_single_arg(args: &str) -> Option<String> {
 pub fn tools_system_prompt() -> String {
     r#"[Harness Native Tools Available]
 You can call local tools using the exact syntax <<TOOL: tool_name("argument")>> in your reply:
+- ask_user_choice({"question": "Title", "options": ["Opt 1", "Opt 2", "Opt 3"]}): Display an interactive choice UI card above composer input for user selection
 - search_chat_history("query"): Search past conversations and chat sessions across all user history
 - get_session_details("session_id" or "latest"): Get full message transcript of a past session
 - list_installed_models(): List local GGUF models downloaded on machine
@@ -82,9 +108,7 @@ You can call local tools using the exact syntax <<TOOL: tool_name("argument")>> 
 - evaluate_expression("expression"): Evaluate math calculations with 100% precision
 
 Example usage:
-If user asks: "เมื่อวานคุยเรื่องอะไรไว้" -> <<TOOL: search_chat_history("เมื่อวาน")>>
-If user asks: "เช็ก VRAM หน่อย" -> <<TOOL: get_system_status()>>
-If user asks: "คำนวณ (345 * 12.5) / 100" -> <<TOOL: evaluate_expression("(345 * 12.5) / 100")>>
+If user asks for choices or open-ended directions: <<TOOL: ask_user_choice({"question": "คุณต้องการให้ดำเนินการไปในแนวทางใด?", "options": ["แนวทาง A: ค้นหาข้อมูลเพิ่ม", "แนวทาง B: สร้างไฟล์ตามโครงร่าง", "แนวทาง C: ปรับแต่งรายละเอียด"]})>>
 "#
     .to_string()
 }

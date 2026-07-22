@@ -7,7 +7,7 @@
 //! 3. Signal the frontend to display an interactive choice UI for the user.
 
 use super::{
-    EvidenceChunk, EvidenceQuality, RawEvidence, RetrievalTraceEntry,
+    Confidence, EvidenceChunk, EvidenceQuality, RawEvidence, RetrievalTraceEntry,
     RetrievalTraceRecorder, SourceKind, SubQuestion, SubQuestionResult,
 };
 
@@ -64,6 +64,31 @@ pub fn evaluate_pass(
     let total_chunks: usize = sub_results.iter().map(|r| r.evidence.chunks.len()).sum();
     let has_weak = sub_results.iter().any(|r| r.quality == EvidenceQuality::Weak);
     let all_empty = sub_results.iter().all(|r| r.evidence.chunks.is_empty());
+
+    // Interactive choice detection for open-ended or choice-request queries
+    let lower_query = original_query.to_lowercase();
+    if lower_query.contains("เลือก")
+        || lower_query.contains("ทางเลือก")
+        || lower_query.contains("แนวทาง")
+        || lower_query.contains("ถามผู้ใช้")
+        || lower_query.contains("option")
+        || lower_query.contains("choice")
+        || lower_query.contains("grill-me")
+    {
+        return PassResult {
+            pass_number,
+            action: ReasoningAction::AskUser {
+                question: "โปรดเลือกแนวทางที่คุณต้องการให้ AI ดำเนินการต่อ:".to_string(),
+                options: vec![
+                    "แนวทางที่ 1: ดึงข้อมูลเชิงลึกเพิ่มเติมด้วย Crawl4AI".to_string(),
+                    "แนวทางที่ 2: สรุปและตอบคำถามด้วยข้อมูลปัจจุบัน".to_string(),
+                    "แนวทางที่ 3: ปรับแต่งข้อกำหนดเพิ่มเติม".to_string(),
+                ],
+            },
+            confidence,
+            status_message: format!("Pass {pass_number}: Displayed Interactive Choice UI for user selection"),
+        };
+    }
 
     // Fast path: strong evidence across all sub-questions
     if confidence >= SUFFICIENCY_THRESHOLD && !has_weak && total_chunks >= 2 {

@@ -104,6 +104,20 @@ pub fn run_adaptive_pipeline(
     reasoning_loop::record_pass_trace(&trace, &pass_result);
     status(pass_result.status_message.clone());
 
+    // If the reasoning loop recommends asking the user, emit choice event to UI
+    if let reasoning_loop::ReasoningAction::AskUser { question, options } = &pass_result.action {
+        #[derive(serde::Serialize, Clone)]
+        struct ChoicePayload {
+            question: String,
+            options: Vec<String>,
+        }
+        use tauri::Emitter;
+        let _ = app.emit("ai-choice-request", ChoicePayload {
+            question: question.clone(),
+            options: options.clone(),
+        });
+    }
+
     // If the reasoning loop recommends a secondary search, execute it
     if let reasoning_loop::ReasoningAction::RefineSearch { refined_queries, .. } = &pass_result.action {
         status("Pass 2: Running targeted secondary search batch to fill evidence gaps".to_string());
@@ -136,6 +150,18 @@ pub fn run_adaptive_pipeline(
         // Re-evaluate after secondary pass
         let pass2_result = reasoning_loop::evaluate_pass(2, &sub_results, &plan_original_query);
         reasoning_loop::record_pass_trace(&trace, &pass2_result);
+        if let reasoning_loop::ReasoningAction::AskUser { question, options } = &pass2_result.action {
+            #[derive(serde::Serialize, Clone)]
+            struct ChoicePayload {
+                question: String,
+                options: Vec<String>,
+            }
+            use tauri::Emitter;
+            let _ = app.emit("ai-choice-request", ChoicePayload {
+                question: question.clone(),
+                options: options.clone(),
+            });
+        }
         status(pass2_result.status_message);
     }
 
