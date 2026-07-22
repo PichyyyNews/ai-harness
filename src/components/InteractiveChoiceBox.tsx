@@ -14,15 +14,17 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
   const [customText, setCustomText] = useState("");
   const isCustom = selectedIndex === -1;
 
-  const handleSubmit = () => {
-    if (isCustom && customText.trim()) {
-      onSubmit(customText.trim());
-    } else if (selectedIndex !== null && selectedIndex >= 0 && selectedIndex < options.length) {
-      onSubmit(options[selectedIndex]);
-    }
+  const handleOptionClick = (option: string, index: number) => {
+    setSelectedIndex(index);
+    // Instant auto-submit like Claude Q&A!
+    onSubmit(option);
   };
 
-  const canSubmit = (selectedIndex !== null && selectedIndex >= 0) || (isCustom && customText.trim().length > 0);
+  const handleCustomSubmit = () => {
+    if (customText.trim()) {
+      onSubmit(customText.trim());
+    }
+  };
 
   return (
     <div className={styles.choiceOverlay}>
@@ -39,7 +41,7 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
             key={index}
             type="button"
             className={`${styles.choiceOption} ${selectedIndex === index ? styles.choiceOptionSelected : ""}`}
-            onClick={() => setSelectedIndex(index)}
+            onClick={() => handleOptionClick(option, index)}
           >
             <div className={`${styles.choiceRadio} ${selectedIndex === index ? styles.choiceRadioSelected : ""}`}>
               {selectedIndex === index && <div className={styles.choiceRadioDot} />}
@@ -66,6 +68,12 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
             placeholder="Type your custom response here…"
             value={customText}
             onChange={(e) => setCustomText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleCustomSubmit();
+              }
+            }}
             rows={2}
             autoFocus
           />
@@ -78,15 +86,17 @@ export function InteractiveChoiceBox({ question, options, onSubmit, onDismiss }:
             Skip
           </button>
         )}
-        <button
-          type="button"
-          className={styles.choiceSubmit}
-          disabled={!canSubmit}
-          onClick={handleSubmit}
-        >
-          <ArrowUp size={12} weight="bold" />
-          Submit
-        </button>
+        {isCustom && (
+          <button
+            type="button"
+            className={styles.choiceSubmit}
+            disabled={!customText.trim()}
+            onClick={handleCustomSubmit}
+          >
+            <ArrowUp size={12} weight="bold" />
+            Submit
+          </button>
+        )}
       </div>
     </div>
   );

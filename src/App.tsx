@@ -840,8 +840,8 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
             options={pendingChoice.options}
             onSubmit={(answer) => {
               setPendingChoice(null);
-              setDraft(answer);
-              void sendMessage();
+              setDraft("");
+              void sendMessage(answer);
             }}
             onDismiss={() => setPendingChoice(null)}
           />
@@ -999,6 +999,11 @@ function GlobeIcon({ domain }: { domain: string }) {
   );
 }
 
+function cleanToolMarkers(content: string) {
+  if (!content) return content;
+  return content.replace(/<<TOOL:[\s\S]*?>>/g, "").trim();
+}
+
 function preprocessLatex(content: string) {
   if (!content) return content;
   return content
@@ -1013,7 +1018,8 @@ function preprocessLatex(content: string) {
 }
 
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
-  if (!content) return <p>{streaming ? <MorphingInfinity label="Thinking…" /> : ""}</p>;
+  const cleanedContent = cleanToolMarkers(content);
+  if (!cleanedContent) return <p>{streaming ? <MorphingInfinity label="Thinking…" /> : ""}</p>;
   return (
     <div className={styles.markdown}>
       <ReactMarkdown
@@ -1021,7 +1027,7 @@ function MarkdownMessage({ content, sources, streaming }: { content: string; sou
         rehypePlugins={[rehypeHighlight, rehypeKatex]}
         components={{ pre: CodeBlock, a: CitationLink(sources) }}
       >
-        {preprocessLatex(citationMarkdown(content, sources))}
+        {preprocessLatex(citationMarkdown(cleanedContent, sources))}
       </ReactMarkdown>
       {!!sources.length && (
         <div className={styles.webSources} aria-label="Web sources">
