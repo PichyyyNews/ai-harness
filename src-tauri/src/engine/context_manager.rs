@@ -332,7 +332,8 @@ fn prepare_request(
             max_tokens: Some(max_tokens),
             temperature,
             session_id: None,
-            choice_selection: false,
+            interaction_id: None,
+            interaction_option_id: None,
         },
         dropped,
     })
@@ -458,7 +459,8 @@ fn compact_dropped_messages(
         max_tokens: Some(256),
         temperature: Some(0.3),
         session_id: None,
-        choice_selection: false,
+        interaction_id: None,
+        interaction_option_id: None,
     };
     let result = engine.generate(summary_prompt, |_| Ok(()), should_cancel)?;
     if result.finish_reason == FinishReason::Stop && !result.content.trim().is_empty() {

@@ -2,28 +2,31 @@ import { useState } from "react";
 import { ChatCircleDots, ArrowUp } from "@phosphor-icons/react";
 import styles from "./InteractiveChoiceBox.module.css";
 
+export interface ChoiceOption { id: string; label: string; }
+
 export interface InteractiveChoiceBoxProps {
   question: string;
-  options: string[];
+  options: ChoiceOption[];
   disabled?: boolean;
-  onSubmit: (answer: string) => void;
+  allowCustom?: boolean;
+  onSubmit: (optionId: string | null, answer: string) => void;
   onDismiss?: () => void;
 }
 
-export function InteractiveChoiceBox({ question, options, disabled = false, onSubmit, onDismiss }: InteractiveChoiceBoxProps) {
+export function InteractiveChoiceBox({ question, options, disabled = false, allowCustom = false, onSubmit, onDismiss }: InteractiveChoiceBoxProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [customText, setCustomText] = useState("");
   const isCustom = selectedIndex === -1;
 
-  const handleOptionClick = (option: string, index: number) => {
+  const handleOptionClick = (option: ChoiceOption, index: number) => {
     setSelectedIndex(index);
     // Instant auto-submit like Claude Q&A!
-    onSubmit(option);
+    onSubmit(option.id, option.label);
   };
 
   const handleCustomSubmit = () => {
     if (customText.trim()) {
-      onSubmit(customText.trim());
+      onSubmit(null, customText.trim());
     }
   };
 
@@ -39,7 +42,7 @@ export function InteractiveChoiceBox({ question, options, disabled = false, onSu
       <div className={styles.choiceOptions}>
         {options.map((option, index) => (
           <button
-            key={index}
+            key={option.id}
             type="button"
             className={`${styles.choiceOption} ${selectedIndex === index ? styles.choiceOptionSelected : ""}`}
             onClick={() => handleOptionClick(option, index)}
@@ -48,12 +51,12 @@ export function InteractiveChoiceBox({ question, options, disabled = false, onSu
             <div className={`${styles.choiceRadio} ${selectedIndex === index ? styles.choiceRadioSelected : ""}`}>
               {selectedIndex === index && <div className={styles.choiceRadioDot} />}
             </div>
-            <span>{option}</span>
+            <span>{option.label}</span>
           </button>
         ))}
 
         {/* Custom write-in option */}
-        <button
+        {allowCustom && <button
           type="button"
           className={`${styles.choiceOption} ${isCustom ? styles.choiceOptionSelected : ""}`}
           onClick={() => setSelectedIndex(-1)}
@@ -63,9 +66,9 @@ export function InteractiveChoiceBox({ question, options, disabled = false, onSu
             {isCustom && <div className={styles.choiceRadioDot} />}
           </div>
           <span>Custom response…</span>
-        </button>
+        </button>}
 
-        {isCustom && (
+        {allowCustom && isCustom && (
           <textarea
             className={styles.choiceCustomInput}
             placeholder="Type your custom response here…"

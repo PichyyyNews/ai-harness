@@ -13,36 +13,7 @@ pub fn execute_tool(app: &AppHandle, name: &str, raw_args: &str) -> Result<Strin
     let clean_args = raw_args.trim();
 
     match clean_name {
-        "ask_user_choice" => {
-            #[derive(serde::Deserialize, serde::Serialize)]
-            struct ChoicePayload {
-                question: String,
-                options: Vec<String>,
-                #[serde(default)]
-                reason: String,
-            }
-
-            let payload: ChoicePayload = serde_json::from_str(clean_args)
-                .unwrap_or_else(|_| ChoicePayload {
-                    question: parse_single_arg(clean_args).unwrap_or_else(|| "Please select an option to proceed:".to_string()),
-                    options: vec![
-                        "Option 1: Proceed with automatic plan".to_string(),
-                        "Option 2: Perform deep web research".to_string(),
-                        "Option 3: Custom adjustments".to_string(),
-                    ],
-                    reason: String::new(),
-                });
-
-            use tauri::Emitter;
-            let _ = app.emit("ai-choice-request", &payload);
-            eprintln!("[tool-router] requesting user input: {}", payload.question);
-            Ok(format!(
-                "[choice-pending] Interactive Choice UI displayed to user with question: \"{}\" and {} options. Required input: {}. Awaiting user choice.",
-                payload.question,
-                payload.options.len(),
-                payload.reason,
-            ))
-        }
+        "ask_user_choice" => Err("ask_user_choice is owned by the typed interaction controller.".to_string()),
         "search_chat_history" => {
             let query = parse_single_arg(clean_args).unwrap_or(clean_args.to_string());
             history::search_chat_history(app, &query, 5)
@@ -101,8 +72,8 @@ fn parse_single_arg(args: &str) -> Option<String> {
 }
 
 pub fn tools_system_prompt() -> String {
-    r#"[Harness Native Tools]
-The host routes and executes native tools before this answer is generated. Use any supplied tool result as authoritative context. Do not print tool markers, tool syntax, or a fake interactive-choice list. If the host needs user input, it will display the native Choice UI and resume with the user's selection.
+    r#"[Answer synthesis]
+The host has already routed tools and user interactions. Use supplied evidence and native tool results as authoritative. Answer the user's request directly with a useful best-effort overview when it is broad; do not turn a broad request into a request to narrow the scope. Never print tool syntax, internal plans, or a fake interactive-choice list. Only the host may request a native interaction.
 "#
     .to_string()
 }

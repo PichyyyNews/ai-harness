@@ -12,14 +12,14 @@ import "katex/dist/katex.min.css";
 import logoUrl from "../logo.svg";
 import { Badge, Button, Card, InteractiveChoiceBox, MorphingInfinity, Textarea, TextShimmerWave, Toast } from "./components";
 import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
-import { streamLocalChat, type ChatMessage } from "./lib/local-chat";
+import { streamLocalChat, type ChatMessage, type InteractionOption } from "./lib/local-chat";
 import styles from "./App.module.css";
 
 type Screen = "picker" | "chat";
 type MenuName = "File" | "Edit" | "View" | "Help";
 type WindowAction = "minimize" | "maximize" | "close";
 type ConversationMessage = ChatMessage & { process?: string[]; sources?: WebSource[]; retrievalTrace?: RetrievalTraceEntry[]; isQueued?: boolean };
-interface PendingChoice { question: string; options: string[]; }
+interface PendingChoice { id: string; question: string; options: InteractionOption[]; }
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return "Size unavailable";
@@ -357,7 +357,7 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<PendingChoice>("ai-choice-request", (event) => {
+    const unlisten = listen<PendingChoice>("ai-interaction-request", (event) => {
       setPendingChoice(event.payload);
     });
     return () => { unlisten.then((f) => f()); };
@@ -508,15 +508,12 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     setDraft("");
   };
 
-  const sendMessage = async (overrideContent?: string, choiceSelection = false) => {
+  const sendMessage = async (
+    overrideContent?: string,
+    interaction?: { id: string; optionId: string },
+  ) => {
     const content = (overrideContent ?? draft).trim();
     if (!content || !engineStarted) return;
-    if (content.includes("<<TOOL:")) {
-      setDraft("");
-      onNotify("Internal tool instructions are not sent as chat messages.");
-      return;
-    }
-
     if (streaming) {
       promptQueueRef.current = [...promptQueueRef.current, content];
       setPromptQueue([...promptQueueRef.current]);
@@ -562,7 +559,8 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       const result = await streamLocalChat({
         messages: requestMessages,
         sessionId: session.id,
-        choiceSelection,
+        interactionId: interaction?.id,
+        interactionOptionId: interaction?.optionId,
         signal: controller.signal,
         onDelta: (delta) => {
           if (replacementInProgress.current) {
@@ -870,10 +868,14 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
             question={pendingChoice.question}
             options={pendingChoice.options}
             disabled={streaming}
-            onSubmit={(answer) => {
+            onSubmit={(optionId, answer) => {
+              if (!optionId) {
+                onNotify("Custom responses are not available for this required choice. Select an option or skip it.");
+                return;
+              }
               setPendingChoice(null);
               setDraft("");
-              void sendMessage(answer, true);
+              void sendMessage(answer, { id: pendingChoice.id, optionId });
             }}
             onDismiss={() => setPendingChoice(null)}
           />
@@ -1005,13 +1007,6 @@ function GlobeIcon({ domain }: { domain: string }) {
   );
 }
 
-function cleanToolMarkers(content: string) {
-  if (!content) return content;
-  // Tool calls stream token-by-token. Hide the command as soon as its prefix
-  // arrives, rather than waiting for the closing marker at the end.
-  return content.replace(/<<TOOL:[\s\S]*(?:>>|$)/g, "").trim();
-}
-
 function preprocessLatex(content: string) {
   if (!content) return content;
   return content
@@ -1026,7 +1021,7 @@ function preprocessLatex(content: string) {
 }
 
 function MarkdownMessage({ content, sources, streaming }: { content: string; sources: WebSource[]; streaming: boolean }) {
-  const cleanedContent = cleanToolMarkers(content);
+  const cleanedContent = content;
   if (!cleanedContent) return <p>{streaming ? <MorphingInfinity label="Thinking…" /> : ""}</p>;
   return (
     <div className={styles.markdown}>

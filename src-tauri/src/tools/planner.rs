@@ -60,40 +60,6 @@ Recent conversation:
     request_route(endpoint, &prompt)
 }
 
-/// A small local model can still ignore the preflight decision while composing
-/// its answer. Review the completed draft through the same typed protocol
-/// before exposing it, so a clarification is rendered as the native UI rather
-/// than being detected with text or Markdown heuristics.
-pub fn review_draft(endpoint: &str, user_message: &str, draft: &str) -> ToolRoute {
-    let prompt = format!(
-        r#"You are the final interaction guard for an AI assistant. Return JSON only.
-
-Decide whether the assistant draft already answers the user's request, or instead asks the user to choose, narrow scope, select a category, or provide missing information. If it asks for user input, return a native choice request using the actual alternatives implied by the draft. Do not return an explanation or Markdown.
-
-Return exactly one of:
-{{"action":"answer"}}
-{{"action":"ask_user_choice","question":"...","options":["...","..."],"reason":"..."}}
-
-User message:
-{user_message}
-
-Assistant draft:
-{draft}"#
-    );
-    match request_route(endpoint, &prompt) {
-        ToolRoute::AskUserChoice {
-            question,
-            options,
-            reason,
-        } => ToolRoute::AskUserChoice {
-            question,
-            options,
-            reason,
-        },
-        _ => ToolRoute::Answer,
-    }
-}
-
 fn request_route(endpoint: &str, prompt: &str) -> ToolRoute {
     let Ok(client) = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(6))

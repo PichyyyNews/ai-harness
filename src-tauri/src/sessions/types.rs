@@ -1,6 +1,25 @@
 use serde::Serialize;
 use crate::web_search::{RetrievalTraceEntry, WebSource};
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingInteraction {
+    pub id: String,
+    pub session_id: String,
+    pub request_content: String,
+    pub question: String,
+    pub options: Vec<InteractionOption>,
+    pub reason: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {

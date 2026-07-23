@@ -1,4 +1,4 @@
-use super::types::{SessionDetail, SessionMessage, SessionSummary};
+use super::types::{InteractionOption, PendingInteraction, SessionDetail, SessionMessage, SessionSummary};
 use crate::web_search::{RetrievalTraceEntry, SearchResult, WebSource};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -100,6 +100,18 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
             summary TEXT NOT NULL,
             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS pending_interactions (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            request_content TEXT NOT NULL,
+            question TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            selected_option_id TEXT,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
          );",
     ).map_err(|error| format!("Could not migrate local chat database: {error}"))?;
     let mut columns = connection
@@ -121,6 +133,62 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             .map_err(|error| format!("Could not extend local chat schema: {error}"))?;
     }
     Ok(())
+}
+
+pub fn create_pending_interaction(
+    app: &AppHandle,
+    session_id: &str,
+    request_content: &str,
+    question: &str,
+    option_labels: &[String],
+    reason: &str,
+) -> Result<PendingInteraction, String> {
+    let interaction = PendingInteraction {
+        id: Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        request_content: request_content.to_string(),
+        question: question.trim().to_string(),
+        options: option_labels.iter().map(|label| InteractionOption {
+            id: Uuid::new_v4().to_string(), label: label.trim().to_string(),
+        }).collect(),
+        reason: reason.trim().to_string(),
+        created_at: utc_now(),
+    };
+    let connection = open(app)?;
+    connection.execute(
+        "UPDATE pending_interactions SET status = 'superseded', resolved_at = ?1 WHERE session_id = ?2 AND status = 'pending'",
+        params![utc_now(), session_id],
+    ).map_err(|error| format!("Could not supersede pending interaction: {error}"))?;
+    connection.execute(
+        "INSERT INTO pending_interactions (id, session_id, request_content, question, options_json, reason, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+        params![interaction.id, interaction.session_id, interaction.request_content, interaction.question, serde_json::to_string(&interaction.options).map_err(|error| format!("Could not serialize interaction options: {error}"))?, interaction.reason, interaction.created_at],
+    ).map_err(|error| format!("Could not save pending interaction: {error}"))?;
+    Ok(interaction)
+}
+
+pub fn resolve_pending_interaction(
+    app: &AppHandle,
+    interaction_id: &str,
+    option_id: &str,
+    session_id: &str,
+) -> Result<(PendingInteraction, InteractionOption), String> {
+    let connection = open(app)?;
+    let interaction = connection.query_row(
+        "SELECT id, session_id, request_content, question, options_json, reason, created_at FROM pending_interactions WHERE id = ?1 AND session_id = ?2 AND status = 'pending'",
+        params![interaction_id, session_id],
+        |row| {
+            let options: Vec<InteractionOption> = serde_json::from_str(&row.get::<_, String>(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok(PendingInteraction { id: row.get(0)?, session_id: row.get(1)?, request_content: row.get(2)?, question: row.get(3)?, options, reason: row.get(5)?, created_at: row.get(6)? })
+        },
+    ).optional().map_err(|error| format!("Could not load pending interaction: {error}"))?
+      .ok_or_else(|| "This choice is no longer active. Please ask again.".to_string())?;
+    let option = interaction.options.iter().find(|option| option.id == option_id).cloned()
+        .ok_or_else(|| "That choice does not belong to the active interaction.".to_string())?;
+    connection.execute(
+        "UPDATE pending_interactions SET status = 'resolved', selected_option_id = ?1, resolved_at = ?2 WHERE id = ?3 AND status = 'pending'",
+        params![option_id, utc_now(), interaction_id],
+    ).map_err(|error| format!("Could not resolve pending interaction: {error}"))?;
+    Ok((interaction, option))
 }
 
 fn summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
@@ -613,6 +681,14 @@ mod tests {
             .expect("read message columns");
         assert!(columns.iter().any(|column| column == "web_sources"));
         assert!(columns.iter().any(|column| column == "retrieval_trace"));
+        let interaction_table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pending_interactions'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("interaction table");
+        assert_eq!(interaction_table_count, 1);
     }
 
     #[test]

@@ -7,10 +7,16 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface InteractionOption {
+  id: string;
+  label: string;
+}
+
 interface StreamChatOptions {
   messages: ChatMessage[];
   sessionId?: string;
-  choiceSelection?: boolean;
+  interactionId?: string;
+  interactionOptionId?: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onTrim: (suffix: string) => void;
@@ -29,7 +35,7 @@ export interface GenerationResult {
   retrievalTrace: RetrievalTraceEntry[];
 }
 
-export async function streamLocalChat({ messages, sessionId, choiceSelection = false, signal, onDelta, onTrim, onStatus, onRetrievalTrace }: StreamChatOptions): Promise<GenerationResult | undefined> {
+export async function streamLocalChat({ messages, sessionId, interactionId, interactionOptionId, signal, onDelta, onTrim, onStatus, onRetrievalTrace }: StreamChatOptions): Promise<GenerationResult | undefined> {
   const [unlistenToken, unlistenTrim, unlistenStatus, unlistenTrace] = await Promise.all([
     listen<EngineTokenEvent>("engine-token", (event) => onDelta(event.payload.token)),
     listen<EngineTrimEvent>("engine-trim", (event) => onTrim(event.payload.suffix)),
@@ -43,7 +49,7 @@ export async function streamLocalChat({ messages, sessionId, choiceSelection = f
       stop();
       return undefined;
     }
-    return await invoke<GenerationResult>("generate_chat", { request: { messages, maxTokens: 1536, temperature: 0.75, sessionId, choiceSelection } });
+    return await invoke<GenerationResult>("generate_chat", { request: { messages, maxTokens: 1536, temperature: 0.75, sessionId, interactionId, interactionOptionId } });
   } finally {
     signal.removeEventListener("abort", stop);
     unlistenToken();

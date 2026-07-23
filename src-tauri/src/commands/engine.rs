@@ -29,6 +29,14 @@ struct StatusEvent {
     status: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InteractionEvent {
+    id: String,
+    question: String,
+    options: Vec<crate::sessions::InteractionOption>,
+}
+
 struct GenerationActivityGuard(Arc<std::sync::atomic::AtomicBool>);
 
 impl GenerationActivityGuard {
@@ -166,8 +174,26 @@ pub async fn generate_chat(
 ) -> Result<GenerationResult, String> {
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let is_choice_selection = request.choice_selection;
         let session_id = request.session_id.clone();
+        let interaction_selection = match (
+            session_id.as_deref(),
+            request.interaction_id.as_deref(),
+            request.interaction_option_id.as_deref(),
+        ) {
+            (Some(session), Some(interaction), Some(option)) => Some(
+                sessions::store::resolve_pending_interaction(
+                    &worker_app,
+                    interaction,
+                    option,
+                    session,
+                )?,
+            ),
+            (None, Some(_), _) | (_, Some(_), None) => {
+                return Err("A choice response must include its session and option identifiers.".to_string())
+            }
+            _ => None,
+        };
+        let is_choice_selection = interaction_selection.is_some();
         let pending_user = request
             .messages
             .iter()
@@ -227,13 +253,14 @@ pub async fn generate_chat(
                 .collect();
         }
         let mut routed_tool_result = None;
+        if !is_choice_selection {
         if let Some(message) = &pending_user {
             let routing_context = request
                 .messages
                 .iter()
                 .rev()
                 .filter(|entry| entry.role == "user" || entry.role == "assistant")
-                .take(6)
+                .take(4)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
@@ -258,43 +285,45 @@ pub async fn generate_chat(
                     question,
                     options,
                     reason,
-                } if !is_choice_selection => {
-                    let choice_args = serde_json::json!({
-                        "question": question,
-                        "options": options,
-                        "reason": reason,
-                    });
-                    let output = crate::tools::execute_tool(
-                        &worker_app,
-                        "ask_user_choice",
-                        &choice_args.to_string(),
-                    )?;
-                    if output.starts_with("[choice-pending]") {
+                } => {
+                    if let Some(session_id) = &session_id {
+                        let interaction = sessions::store::create_pending_interaction(
+                            &worker_app,
+                            session_id,
+                            &message.content,
+                            &question,
+                            &options,
+                            &reason,
+                        )?;
+                        worker_app.emit("ai-interaction-request", InteractionEvent {
+                            id: interaction.id,
+                            question: interaction.question,
+                            options: interaction.options,
+                        }).map_err(|error| format!("Could not display native choice UI: {error}"))?;
                         let result = GenerationResult {
-                            content: "โปรดเลือกหนึ่งตัวเลือกด้านบนเพื่อดำเนินการต่อ".to_string(),
+                            content: "Select an option above so I can continue.".to_string(),
                             finish_reason: FinishReason::Stop,
                             sources: Vec::new(),
                             retrieval_trace: Vec::new(),
                         };
-                        if let Some(session_id) = &session_id {
-                            sessions::store::append_message(
-                                &worker_app,
-                                session_id,
-                                "assistant",
-                                &result.content,
-                                None,
-                                Some(finish_reason_name(&result.finish_reason)),
-                                Some(&result.sources),
-                                Some(&result.retrieval_trace),
-                            )?;
-                            sessions::store::set_memory(&worker_app, session_id, memory.summary())?;
-                        }
+                        sessions::store::append_message(
+                            &worker_app,
+                            session_id,
+                            "assistant",
+                            &result.content,
+                            None,
+                            Some(finish_reason_name(&result.finish_reason)),
+                            Some(&result.sources),
+                            Some(&result.retrieval_trace),
+                        )?;
+                        sessions::store::set_memory(&worker_app, session_id, memory.summary())?;
                         return Ok(result);
+                    } else {
+                        return Err("A saved chat session is required for a native interaction.".to_string());
                     }
                 }
-                crate::tools::planner::ToolRoute::AskUserChoice { .. } => {}
             }
-            let _ = message;
+        }
         }
         let tier0_analysis = pending_user.as_ref().and_then(|message| {
             let runtime = state.embedding_runtime.lock().ok()?;
@@ -384,21 +413,32 @@ pub async fn generate_chat(
                 );
             }
         }
-        let search_plan = pending_user.as_ref().and_then(|message| {
-            let decision = crate::web_search::query::routing_decision(
-                &message.content,
-                language_classification.as_ref(),
-            );
-            crate::web_search::observability::log_route(&worker_app, &message.content, &decision);
-            matches!(decision, crate::web_search::query::RoutingDecision::Search { .. })
-                .then(|| {
-                    crate::web_search::query::plan_query(
-                        &message.content,
-                        language_classification.as_ref(),
-                    )
-                })
-                .flatten()
-        });
+        // A typed native-tool decision is already a concrete answer plan. Do
+        // not also launch generic web retrieval for it: that adds latency and
+        // can dilute fresh local state with unrelated search snippets.
+        let search_plan = routed_tool_result
+            .is_none()
+            .then(|| pending_user.as_ref())
+            .flatten()
+            .and_then(|message| {
+                let decision = crate::web_search::query::routing_decision(
+                    &message.content,
+                    language_classification.as_ref(),
+                );
+                crate::web_search::observability::log_route(
+                    &worker_app,
+                    &message.content,
+                    &decision,
+                );
+                matches!(decision, crate::web_search::query::RoutingDecision::Search { .. })
+                    .then(|| {
+                        crate::web_search::query::plan_query(
+                            &message.content,
+                            language_classification.as_ref(),
+                        )
+                    })
+                    .flatten()
+            });
         let grounding = search_plan.and_then(|plan| {
             let web_budget =
                 engine::context_manager::web_context_char_budget(engine.context_size());
@@ -471,7 +511,7 @@ pub async fn generate_chat(
                 },
             );
         }
-        if is_choice_selection {
+        if let Some((interaction, option)) = &interaction_selection {
             let current_user_index = request
                 .messages
                 .iter()
@@ -481,7 +521,10 @@ pub async fn generate_chat(
                 current_user_index,
                 engine::ChatMessage {
                     role: "system".to_string(),
-                    content: "The latest user message is their selection from the immediately preceding native Choice UI. Continue the original request using that selection. Do not ask another choice or scope question; make any remaining reasonable assumption and give the answer.".to_string(),
+                    content: format!(
+                        "[Native interaction resolved]\nOriginal request: {}\nRequired decision: {}\nSelected option: {}\nContinue the original request with this selection. Do not request another choice or scope question unless this selection is invalid for an external reason; make reasonable assumptions and answer.",
+                        interaction.request_content, interaction.question, option.label
+                    ),
                     created_at: None,
                 },
             );
@@ -605,51 +648,12 @@ pub async fn generate_chat(
             || state.cancel_generation.load(Ordering::SeqCst),
         )?;
 
-        let mut waiting_for_user_choice = false;
-        if !is_choice_selection {
-            if let Some(message) = &pending_user {
-            if let crate::tools::planner::ToolRoute::AskUserChoice {
-                question,
-                options,
-                reason,
-            } = crate::tools::planner::review_draft(
-                engine.endpoint(),
-                &message.content,
-                &result.content,
-            ) {
-                let choice_args = serde_json::json!({
-                    "question": question,
-                    "options": options,
-                    "reason": reason,
-                });
-                let tool_output = crate::tools::execute_tool(
-                    &worker_app,
-                    "ask_user_choice",
-                    &choice_args.to_string(),
-                )?;
-                if tool_output.starts_with("[choice-pending]") {
-                    worker_app
-                        .emit(
-                            "engine-trim",
-                            TrimEvent {
-                                suffix: result.content.clone(),
-                            },
-                        )
-                        .map_err(|error| format!("Could not replace a clarification draft: {error}"))?;
-                    waiting_for_user_choice = true;
-                    result.content = "โปรดเลือกหนึ่งตัวเลือกด้านบนเพื่อดำเนินการต่อ".to_string();
-                }
-            }
-        }
-        }
-
         let violations = engine::memory::constraint_guard::violations(
             engine.endpoint(),
             &result.content,
             &active_constraints,
         );
-        if !waiting_for_user_choice
-            && !violations.is_empty()
+        if !violations.is_empty()
             && !matches!(result.finish_reason, FinishReason::Cancelled)
             && !state.cancel_generation.load(Ordering::SeqCst)
         {
@@ -716,8 +720,7 @@ pub async fn generate_chat(
             )?;
         }
         if let Some(grounding) = &grounding {
-            if !waiting_for_user_choice
-                && grounding.sources.is_empty()
+            if grounding.sources.is_empty()
                 && !matches!(result.finish_reason, FinishReason::Cancelled)
                 && !state.cancel_generation.load(Ordering::SeqCst)
             {

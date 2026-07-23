@@ -1,4 +1,4 @@
 pub mod store;
 pub mod types;
 
-pub use types::{SessionDetail, SessionSummary};
+pub use types::{InteractionOption, SessionDetail, SessionSummary};
