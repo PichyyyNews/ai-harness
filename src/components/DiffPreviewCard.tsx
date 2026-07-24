@@ -8,6 +8,16 @@ interface DiffPreviewCardProps {
   hasError?: boolean;
 }
 
+const decodeUnicode = (str: string) => {
+  try {
+    return str.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) =>
+      String.fromCharCode(parseInt(code, 16))
+    );
+  } catch {
+    return str;
+  }
+};
+
 export const DiffPreviewCard: React.FC<DiffPreviewCardProps> = ({ logs, isDone, hasError }) => {
   if (!logs || logs.length === 0) return null;
 
@@ -34,7 +44,8 @@ export const DiffPreviewCard: React.FC<DiffPreviewCardProps> = ({ logs, isDone, 
       </div>
 
       <div className={styles.terminalBody}>
-        {logs.map((line, idx) => {
+        {logs.map((rawLine, idx) => {
+          const line = decodeUnicode(rawLine);
           const isDiffLineAdd = line.startsWith('+') && !line.startsWith('+++');
           const isDiffLineRemove = line.startsWith('-') && !line.startsWith('---');
           const isFileHeader = line.includes('Applied edit to') || line.includes('Commit') || line.includes('aider');

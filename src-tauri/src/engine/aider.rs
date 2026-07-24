@@ -75,6 +75,8 @@ pub async fn execute_aider_prompt(
         cmd.env("OPENAI_API_BASE", &api_base);
         cmd.env("OPENAI_API_KEY", &api_key);
         cmd.env("PYTHONPATH", &python_path);
+        cmd.env("PYTHONIOENCODING", "utf-8");
+        cmd.env("PYTHONUTF8", "1");
 
         cmd.arg("-m").arg("aider.main");
         cmd.arg("--model").arg(&model_arg);

@@ -19,3 +19,4 @@ src-tauri/bin/*.dll
 .env
 .env.local
 .DS_Store
+.aider*
