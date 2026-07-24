@@ -123,15 +123,21 @@ pub fn run_agentic_loop(
                 };
 
                 let mut continuations = 0;
-                // Fix D1: finish_reason == Length triggers auto-continuation (language agnostic)
-                let is_length_cutoff = finish_reason.as_deref() == Some("length");
-                while (is_length_cutoff || is_incomplete_text(&final_content)) && continuations < 3 {
+                let mut current_finish_reason = finish_reason;
+
+                while continuations < 3 {
+                    let is_length_cutoff = current_finish_reason.as_deref() == Some("length");
+                    if !is_length_cutoff && !is_incomplete_text(&final_content) {
+                        break;
+                    }
+
                     tracing::info!(
                         session_id = ?state.session_id,
                         is_length_cutoff,
                         continuation_turn = continuations + 1,
                         "Triggering seamless continuation request"
                     );
+
                     let mut cont_messages = state.messages.clone();
                     cont_messages.push(ChatMessage {
                         role: "assistant".to_string(),
@@ -145,11 +151,11 @@ pub fn run_agentic_loop(
                     });
 
                     if let Ok(cont_res) = request_chat_completion(endpoint, &cont_messages, None) {
-                        if let LoopStepResult::FinalAnswer { content: cont_text, .. } = parse_loop_step_response(&cont_res) {
-                            let trimmed_cont = cont_text.trim();
-                            if !trimmed_cont.is_empty() {
-                                final_content.push(' ');
-                                final_content.push_str(trimmed_cont);
+                        if let LoopStepResult::FinalAnswer { content: cont_text, finish_reason: next_finish } = parse_loop_step_response(&cont_res) {
+                            let before_len = final_content.len();
+                            stitch_continuation_text(&mut final_content, &cont_text);
+                            current_finish_reason = next_finish;
+                            if final_content.len() > before_len {
                                 continuations += 1;
                                 continue;
                             }
@@ -775,6 +781,41 @@ fn is_incomplete_text(text: &str) -> bool {
         return false;
     }
     true
+}
+
+fn stitch_continuation_text(base: &mut String, continuation: &str) {
+    let trimmed = continuation.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let base_chars: Vec<char> = base.chars().collect();
+    let cont_chars: Vec<char> = trimmed.chars().collect();
+    let max_check = base_chars.len().min(cont_chars.len()).min(40);
+    let mut overlap_len = 0;
+
+    for len in (1..=max_check).rev() {
+        let base_slice = &base_chars[base_chars.len() - len..];
+        let cont_slice = &cont_chars[..len];
+        if base_slice == cont_slice {
+            overlap_len = len;
+            break;
+        }
+    }
+
+    let clean_cont: String = cont_chars[overlap_len..].iter().collect();
+    let clean_cont = clean_cont.trim_start();
+    if clean_cont.is_empty() {
+        return;
+    }
+
+    let needs_space = base.chars().last().map_or(false, |c| c.is_ascii_alphanumeric())
+        && clean_cont.chars().next().map_or(false, |c| c.is_ascii_alphanumeric());
+
+    if needs_space {
+        base.push(' ');
+    }
+    base.push_str(clean_cont);
 }
 
 fn force_final_answer(endpoint: &str, state: &AgentLoopState) -> Result<GenerationResult, String> {
