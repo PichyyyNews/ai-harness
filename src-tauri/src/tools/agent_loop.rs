@@ -167,7 +167,7 @@ pub fn run_agentic_loop(
                 };
                 return Ok(AgentLoopOutcome::Completed(res));
             }
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, content } => {
                 state.iteration += 1;
 
                 // Build assistant message containing tool_calls
@@ -187,7 +187,7 @@ pub fn run_agentic_loop(
 
                 let assistant_msg = ChatMessage {
                     role: "assistant".to_string(),
-                    content: String::new(),
+                    content: content.clone(),
                     tool_calls: Some(assistant_tool_calls_json),
                     tool_call_id: None,
                     name: None,
@@ -200,7 +200,7 @@ pub fn run_agentic_loop(
                     let status_label = match call.name.as_str() {
                         "search_web" => {
                             let q = call.arguments["query"].as_str().unwrap_or("");
-                            format!("🔍 Searching web: \"{q}\"")
+                            format!("🔍 Searching web for \"{q}\"")
                         }
                         "crawl_web_page" => {
                             let url = call.arguments["url"].as_str().unwrap_or("");
@@ -287,7 +287,10 @@ pub fn run_agentic_loop(
                                 }
                             }
 
-                            let question = raw_question;
+                            let mut question = raw_question.trim().to_string();
+                            if question.starts_with('{') || question.contains("\"options\":") || question.contains("\"question\":") || question.contains("[\"") {
+                                question = "กรุณาเลือกขอบเขตหรือหัวข้อที่คุณนิวส์สนใจจากตัวเลือกด้านล่างนี้ได้เลยครับ:".to_string();
+                            }
 
                             let options_val = if !effective_args["options"].is_null() {
                                 &effective_args["options"]
@@ -312,8 +315,8 @@ pub fn run_agentic_loop(
                                     .iter()
                                     .filter_map(|v| {
                                         if let Some(s) = v.as_str() {
-                                            let clean = s.trim();
-                                            if !clean.is_empty() { Some(clean.to_string()) } else { None }
+                                            let clean = s.trim().trim_matches('*').trim_matches(':').trim();
+                                            if !clean.is_empty() && !clean.starts_with('{') && !clean.contains("\"options\":") { Some(clean.to_string()) } else { None }
                                         } else if let Some(obj) = v.as_object() {
                                             obj.get("label")
                                                 .or_else(|| obj.get("text"))
@@ -380,8 +383,18 @@ pub fn run_agentic_loop(
                             )
                             .map_err(|e| format!("Could not display native choice UI: {e}"))?;
 
+                            let clean_intro_content = if is_incomplete_text(&content) {
+                                if let Some(last_end) = content.rfind(|c: char| c == '.' || c == '!' || c == '?' || c == '\n') {
+                                    content[..=last_end].trim().to_string()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                content.clone()
+                            };
+
                             let choice_res = GenerationResult {
-                                content: String::new(),
+                                content: clean_intro_content,
                                 finish_reason: FinishReason::Stop,
                                 sources: state.sources.clone(),
                                 retrieval_trace: state.retrieval_trace.clone(),
@@ -424,15 +437,15 @@ pub fn run_agentic_loop(
                         "decision": "used as tool context"
                     }));
 
-                    let tool_result_msg = ChatMessage {
+                    // Append tool response to message history
+                    state.messages.push(ChatMessage {
                         role: "tool".to_string(),
                         content: result_content,
                         tool_calls: None,
                         tool_call_id: Some(call.id.clone()),
                         name: Some(call.name.clone()),
                         created_at: None,
-                    };
-                    state.messages.push(tool_result_msg);
+                    });
                 }
             }
         }
@@ -559,7 +572,7 @@ fn parse_loop_step_response(res: &serde_json::Value) -> LoopStepResult {
                     arguments,
                 });
             }
-            return LoopStepResult::ToolCalls(parsed_calls);
+            return LoopStepResult::ToolCalls { calls: parsed_calls, content };
         }
     }
 
@@ -570,7 +583,7 @@ fn parse_loop_step_response(res: &serde_json::Value) -> LoopStepResult {
             raw_content = %content,
             "Model emitted tool call as text tag fallback rather than native JSON tool_calls"
         );
-        return LoopStepResult::ToolCalls(vec![text_call]);
+        return LoopStepResult::ToolCalls { calls: vec![text_call], content };
     }
 
     LoopStepResult::FinalAnswer {

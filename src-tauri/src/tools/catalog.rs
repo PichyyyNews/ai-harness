@@ -29,7 +29,10 @@ pub enum LoopStepResult {
         content: String,
         finish_reason: Option<String>,
     },
-    ToolCalls(Vec<RequestedToolCall>),
+    ToolCalls {
+        calls: Vec<RequestedToolCall>,
+        content: String,
+    },
 }
 
 pub fn tool_catalog() -> Vec<ToolDefinition> {
