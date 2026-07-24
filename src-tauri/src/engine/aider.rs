@@ -17,12 +17,12 @@ pub struct AiderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiderEventPayload {
     pub session_id: String,
-    pub event_type: String, // "stdout", "stderr", "diff", "done", "error"
+    pub event_type: String, // "stdout", "stderr", "done", "error"
     pub content: String,
 }
 
-/// Executes a prompt using the embedded/cloned Aider engine,
-/// streaming stdout/stderr back to the Tauri frontend in real time.
+/// Executes a prompt using Aphelion's native Python API Bridge (aider_bridge.py),
+/// streaming clean JSON events back to the Tauri frontend in real time.
 pub async fn execute_aider_prompt(
     app: AppHandle,
     session_id: String,
@@ -53,31 +53,17 @@ pub async fn execute_aider_prompt(
 
         let auto_commits = config.auto_commits.unwrap_or(true);
 
-        // Path to embedded Aider repository
-        let embedded_aider_dir = Path::new(&workspace).join("aider");
-        let python_path = if embedded_aider_dir.exists() {
-            embedded_aider_dir.to_string_lossy().to_string()
-        } else {
-            "c:\\Users\\Newsk\\Downloads\\Aphelion\\aider".to_string()
-        };
+        let bridge_script = "c:\\Users\\Newsk\\Downloads\\Aphelion\\aider_bridge.py".to_string();
+        let python_path = "c:\\Users\\Newsk\\Downloads\\Aphelion\\aider".to_string();
 
         tracing::info!(
             session_id = %session_id,
             workspace = %workspace,
             model = %model_arg,
             api_base = %api_base,
-            python_path = %python_path,
-            "Launching Aider sidecar process"
+            bridge = %bridge_script,
+            "Launching Aider Python API Bridge process"
         );
-
-        // Ensure workspace is a git repository so Aider doesn't search parent directories
-        let git_dir = Path::new(&workspace).join(".git");
-        if !git_dir.exists() {
-            let _ = Command::new("git")
-                .arg("init")
-                .current_dir(&workspace)
-                .output();
-        }
 
         let mut cmd = Command::new("python");
         cmd.current_dir(&workspace);
@@ -87,13 +73,12 @@ pub async fn execute_aider_prompt(
         cmd.env("PYTHONIOENCODING", "utf-8");
         cmd.env("PYTHONUTF8", "1");
 
-        cmd.arg("-m").arg("aider.main");
+        cmd.arg(&bridge_script);
+        cmd.arg("--workspace").arg(&workspace);
+        cmd.arg("--prompt").arg(&prompt);
+        cmd.arg("--api-base").arg(&api_base);
+        cmd.arg("--api-key").arg(&api_key);
         cmd.arg("--model").arg(&model_arg);
-        cmd.arg("--edit-format").arg("diff");
-        cmd.arg("--no-show-model-warnings");
-        cmd.arg("--no-analytics");
-        cmd.arg("--message").arg(&prompt);
-        cmd.arg("--yes-always");
 
         if !auto_commits {
             cmd.arg("--no-auto-commits");
@@ -112,10 +97,7 @@ pub async fn execute_aider_prompt(
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                let err_msg = format!(
-                    "Failed to launch Aider engine: {}. Ensure Python is installed.",
-                    e
-                );
+                let err_msg = format!("Failed to launch Aider API bridge: {}.", e);
                 let _ = app.emit(
                     "aider-event",
                     AiderEventPayload {
@@ -142,14 +124,29 @@ pub async fn execute_aider_prompt(
                 full_output.push_str(&line);
                 full_output.push('\n');
 
-                let _ = app_clone1.emit(
-                    "aider-event",
-                    AiderEventPayload {
-                        session_id: session_id1.clone(),
-                        event_type: "stdout".to_string(),
-                        content: line,
-                    },
-                );
+                // Check if line is a JSON event object from bridge
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let evt_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("stdout");
+                    let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                    let _ = app_clone1.emit(
+                        "aider-event",
+                        AiderEventPayload {
+                            session_id: session_id1.clone(),
+                            event_type: evt_type.to_string(),
+                            content,
+                        },
+                    );
+                } else {
+                    let _ = app_clone1.emit(
+                        "aider-event",
+                        AiderEventPayload {
+                            session_id: session_id1.clone(),
+                            event_type: "stdout".to_string(),
+                            content: line,
+                        },
+                    );
+                }
             }
             full_output
         });
@@ -175,7 +172,6 @@ pub async fn execute_aider_prompt(
         let _ = stderr_handle.join();
 
         let status = child.wait().map_err(|e| e.to_string())?;
-
         let event_type = if status.success() { "done" } else { "error" };
 
         let _ = app.emit(
@@ -183,7 +179,7 @@ pub async fn execute_aider_prompt(
             AiderEventPayload {
                 session_id: session_id.clone(),
                 event_type: event_type.to_string(),
-                content: format!("Aider process exited with code: {:?}", status.code()),
+                content: format!("Process exited with status: {:?}", status.code()),
             },
         );
 
