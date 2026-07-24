@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import logoUrl from "../logo.svg";
-import { Badge, Button, Card, InteractiveChoiceBox, MorphingInfinity, Textarea, TextShimmerWave, Toast } from "./components";
+import { Badge, Button, Card, DiffPreviewCard, InteractiveChoiceBox, MorphingInfinity, Textarea, TextShimmerWave, Toast, WorkspaceFolderPicker } from "./components";
 import type { CatalogModel, DownloadProgress, InstalledModel, ModelFile, RetrievalTraceEntry, SessionDetail, SessionSummary, WebSource } from "./types";
 import { streamLocalChat, type ChatMessage, type InteractionOption } from "./lib/local-chat";
 import styles from "./App.module.css";
@@ -355,6 +355,23 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const replacementContent = useRef("");
   const [promptQueue, setPromptQueue] = useState<string[]>([]);
   const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
+  const [isAiderMode, setIsAiderMode] = useState(false);
+  const [workspacePath, setWorkspacePath] = useState("c:\\Users\\Newsk\\Downloads\\Aphelion");
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ session_id: string; event_type: string; content: string }>("aider-event", (event) => {
+      const { event_type, content } = event.payload;
+      if (event_type === "stdout" || event_type === "stderr") {
+        setMessages((current) => current.map((msg, idx) => idx === current.length - 1 && msg.role === "assistant"
+          ? { ...msg, process: [...(msg.process ?? []), content] }
+          : msg));
+      } else if (event_type === "done" || event_type === "error") {
+        setStreaming(false);
+      }
+    }).then((h) => { unlisten = h; });
+    return () => unlisten?.();
+  }, []);
 
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
@@ -561,6 +578,26 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
 
     const requestMessages = [...messages.filter((m) => !m.isQueued), userMessage];
     setStreaming(true);
+
+    if (isAiderMode) {
+      try {
+        const result = await invoke<string>("run_aider_coding_task", {
+          sessionId: session.id,
+          workspacePath: workspacePath || "c:\\Users\\Newsk\\Downloads\\Aphelion",
+          prompt: content,
+          autoCommits: true,
+        });
+        setMessages((current) => current.map((msg, idx) => idx === current.length - 1 && msg.role === "assistant"
+          ? { ...msg, content: result || "Aider coding task completed." }
+          : msg));
+      } catch (error) {
+        setToast(`Aider error: ${String(error)}`);
+      } finally {
+        setStreaming(false);
+      }
+      return;
+    }
+
     pendingDelta.current = "";
     replacementInProgress.current = false;
     replacementContent.current = "";
@@ -854,13 +891,25 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       </div>
     </aside>
     <div className={styles.chatPanel}>
+      <div style={{ padding: "8px 16px", borderBottom: "1px solid rgba(255, 255, 255, 0.06)", display: "flex", justifyContent: "flex-end" }}>
+        <WorkspaceFolderPicker
+          currentWorkspace={workspacePath}
+          onSelectWorkspace={setWorkspacePath}
+          isAiderMode={isAiderMode}
+          onToggleAiderMode={setIsAiderMode}
+        />
+      </div>
       <div className={styles.transcriptRegion}>
       <div ref={transcript} className={styles.chatTranscript} onScroll={updateScrollState} aria-live="polite" aria-busy={streaming}>
         {!messages.length && <div className={styles.chatEmpty}><img className={styles.emptyLogo} src={logoUrl} alt="" /><h1>Your local model is ready.</h1><p>{engineStarted ? "Ask anything. Responses stay on this computer." : `${model.fileName} is verified and ready. Start the bundled engine to begin a conversation.`}</p><Button iconPrefix={<Play />} onClick={() => void startEngine()} loading={starting} disabled={engineStarted}>{engineStarted ? "Engine running" : "Start local engine"}</Button></div>}
         {messages.map((message, index) => {
           const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
           return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
-            {message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} sources={message.sources ?? []} streaming={isStreamingMessage} />}
+            {message.role === "assistant" && isAiderMode ? (
+              <DiffPreviewCard logs={message.process ?? []} isDone={!isStreamingMessage} />
+            ) : (
+              message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} sources={message.sources ?? []} streaming={isStreamingMessage} />
+            )}
             {message.role === "assistant" ? (
               <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} />
             ) : (

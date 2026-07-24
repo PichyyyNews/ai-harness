@@ -27,6 +27,7 @@ pub fn run() {
             commands::engine::stop_generation,
             commands::engine::stop_engine,
             commands::engine::trigger_session_end_memory,
+            commands::engine::run_aider_coding_task,
             commands::sessions::create_session,
             commands::sessions::list_sessions,
             commands::sessions::get_session,

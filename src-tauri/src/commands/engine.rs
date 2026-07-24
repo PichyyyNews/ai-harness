@@ -549,3 +549,40 @@ pub async fn trigger_session_end_memory(app: AppHandle, session_id: String) -> R
     }
     Ok(())
 }
+
+#[tauri::command]
+pub async fn run_aider_coding_task(
+    app: AppHandle,
+    session_id: String,
+    workspace_path: String,
+    prompt: String,
+    model_override: Option<String>,
+    api_base_override: Option<String>,
+    auto_commits: Option<bool>,
+) -> Result<String, String> {
+    let state = app.state::<EngineState>();
+
+    let api_base = if let Some(base) = api_base_override {
+        base
+    } else {
+        let engine_guard = state
+            .engine
+            .lock()
+            .map_err(|_| "Engine lock was poisoned".to_string())?;
+        if let Some(ref engine) = *engine_guard {
+            format!("{}/v1", engine.endpoint().trim_end_matches('/'))
+        } else {
+            "http://127.0.0.1:8080/v1".to_string()
+        }
+    };
+
+    let config = engine::aider::AiderConfig {
+        workspace_path,
+        api_base: Some(api_base),
+        api_key: Some("sk-dummy-key".to_string()),
+        model_name: model_override.or_else(|| Some("local-model".to_string())),
+        auto_commits,
+    };
+
+    engine::aider::execute_aider_prompt(app, session_id, config, prompt).await
+}

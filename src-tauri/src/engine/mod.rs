@@ -1,3 +1,4 @@
+pub mod aider;
 pub mod context_manager;
 pub mod embedding_runtime;
 pub mod faithfulness;

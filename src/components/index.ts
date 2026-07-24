@@ -7,3 +7,5 @@ export * from "./Skeleton";
 export * from "./Textarea";
 export * from "./TextShimmerWave";
 export * from "./Toast";
+export * from "./WorkspaceFolderPicker";
+export * from "./DiffPreviewCard";
