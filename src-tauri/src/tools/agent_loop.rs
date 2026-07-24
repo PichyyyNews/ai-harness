@@ -128,74 +128,7 @@ pub fn run_agentic_loop(
 
         let response = request_chat_completion(endpoint, &per_hop_messages, Some(&formatted_tools), 1024)?;
 
-        let step_result = match parse_loop_step_response(&response) {
-            LoopStepResult::FinalAnswer { content: ref text, finish_reason: ref fr } => {
-                let clean_text = text.trim();
-                if let Some(last_msg) = state.messages.iter().rfind(|m| m.role == "user") {
-                    let query = last_msg.content.trim();
-                    if is_greeting_prompt(query) {
-                        LoopStepResult::FinalAnswer {
-                            content: if clean_text.is_empty() {
-                                "สวัสดีครับนิวส์ มีหัวข้อหรือประเด็นใดให้ผมช่วยค้นหาข้อมูลหรือวิเคราะห์ในวันนี้ไหมครับ?".to_string()
-                            } else {
-                                clean_text.to_string()
-                            },
-                            finish_reason: fr.clone(),
-                        }
-                    } else {
-                        let is_broad_query = query.contains("ช่วยหา") || query.contains("หาข้อมูล") || query.contains("ค้นหา");
-
-                        if state.iteration == 0 && (clean_text.is_empty() || is_broad_query) {
-                            tracing::info!(
-                                session_id = ?state.session_id,
-                                query = %query,
-                                "Broad query on Hop 0: executing search_web first before requesting user choice"
-                            );
-                            let search_call = RequestedToolCall {
-                                id: format!("call_search_{}", uuid::Uuid::new_v4().simple()),
-                                name: "search_web".to_string(),
-                                arguments: serde_json::json!({ "query": query }),
-                            };
-                            LoopStepResult::ToolCalls {
-                                calls: vec![search_call],
-                                content: "".to_string(),
-                            }
-                        } else if state.iteration == 1 && is_broad_query {
-                            tracing::info!(
-                                session_id = ?state.session_id,
-                                query = %query,
-                                "Post-search Hop 1: converting broad query search outcome into ask_user_clarification choice box UI"
-                            );
-                            let clarify_call = RequestedToolCall {
-                                id: format!("call_opt_{}", uuid::Uuid::new_v4().simple()),
-                                name: "ask_user_clarification".to_string(),
-                                arguments: serde_json::json!({
-                                    "question": format!("จากข้อมูลที่ค้นพบเบื้องต้นเกี่ยวกับ \"{query}\": ต้องการให้สรุปหรือเจาะลึกในหัวข้อใดครับ?"),
-                                    "options": [
-                                        "เทคโนโลยีและปัญญาประดิษฐ์ (AI / Tech)",
-                                        "เศรษฐกิจ การเงิน และการลงทุน",
-                                        "ข่าวสารและเหตุการณ์ปัจจุบัน",
-                                        "สรุปภาพรวมแบบครอบคลุมทั้งหมด"
-                                    ],
-                                    "reason": "Post-search clarification choice box"
-                                }),
-                            };
-                            LoopStepResult::ToolCalls {
-                                calls: vec![clarify_call],
-                                content: "".to_string(),
-                            }
-                        } else {
-                            parse_loop_step_response(&response)
-                        }
-                    }
-                } else {
-                    parse_loop_step_response(&response)
-                }
-            }
-            res => res,
-        };
-
-        match step_result {
+        match parse_loop_step_response(&response) {
             LoopStepResult::FinalAnswer { content: text, finish_reason } => {
                 let clean_text = text.trim();
                 let mut final_content = if clean_text.is_empty() {
