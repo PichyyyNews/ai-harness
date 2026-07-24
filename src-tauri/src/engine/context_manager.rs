@@ -11,10 +11,23 @@ const MAX_MEMORY_TOKENS: u32 = 768;
 pub const REASONING_MAX_RESPONSE_TOKENS: u32 = 1_024;
 pub const FINAL_ANSWER_MAX_RESPONSE_TOKENS: u32 = 4_096;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HopKind {
     Reasoning,
     FinalAnswer,
+}
+
+impl HopKind {
+    pub const fn response_ceiling(self) -> u32 {
+        match self {
+            Self::Reasoning => REASONING_MAX_RESPONSE_TOKENS,
+            Self::FinalAnswer => FINAL_ANSWER_MAX_RESPONSE_TOKENS,
+        }
+    }
+
+    const fn is_final_answer(self) -> bool {
+        matches!(self, Self::FinalAnswer)
+    }
 }
 
 #[derive(Default)]
@@ -66,10 +79,7 @@ fn dynamic_budget(
     has_memory: bool,
     hop_kind: HopKind,
 ) -> ContextBudget {
-    let response_ceiling = match hop_kind {
-        HopKind::Reasoning => REASONING_MAX_RESPONSE_TOKENS,
-        HopKind::FinalAnswer => FINAL_ANSWER_MAX_RESPONSE_TOKENS,
-    };
+    let response_ceiling = hop_kind.response_ceiling();
     let safety_margin = (context_size.saturating_mul(SAFETY_MARGIN_PERCENT) / 100).max(128);
     let usable = context_size.saturating_sub(safety_margin);
     let minimum_response = (context_size / 10).clamp(MIN_RESPONSE_TOKENS, 640);
@@ -117,7 +127,10 @@ where
     P: FnMut(&ChatRequest),
 {
     let mut history = time_manager::inject_gap_markers(&request.messages);
-    let requested_tokens = request.max_tokens.unwrap_or(DEFAULT_RESPONSE_TOKENS);
+    let requested_tokens = request.max_tokens.unwrap_or_else(|| match hop_kind {
+        HopKind::Reasoning => DEFAULT_RESPONSE_TOKENS,
+        HopKind::FinalAnswer => FINAL_ANSWER_MAX_RESPONSE_TOKENS,
+    });
     let temperature = request.temperature;
     let mut full_output = String::new();
 
@@ -263,10 +276,7 @@ fn prepare_request(
     let has_web = history.iter().any(is_web_context);
     let has_memory = history.iter().any(is_memory_context);
     let budget = dynamic_budget(context, requested_tokens, has_web, has_memory, hop_kind);
-    let response_ceiling = match hop_kind {
-        HopKind::Reasoning => REASONING_MAX_RESPONSE_TOKENS,
-        HopKind::FinalAnswer => FINAL_ANSWER_MAX_RESPONSE_TOKENS,
-    };
+    let response_ceiling = hop_kind.response_ceiling();
 
     let mut kept = vec![time_manager::system_message(time_context)];
     for message in history.iter().filter(|message| message.role == "system") {
@@ -364,16 +374,17 @@ fn prepare_request(
     }
 
     let actual_prompt_tokens = engine.count_messages_tokens(&kept);
-    let remaining = context.saturating_sub(budget.safety_margin + actual_prompt_tokens);
-    let max_tokens = remaining
-        .clamp(MIN_RESPONSE_TOKENS, response_ceiling)
-        .min(budget.response_tokens);
+    let max_tokens = final_max_tokens(context, actual_prompt_tokens, budget, hop_kind);
 
     tracing::info!(
         hop_kind = ?hop_kind,
+        is_final_answer_hop = hop_kind.is_final_answer(),
+        context_size = context,
         requested_tokens,
         response_ceiling,
         actual_prompt_tokens,
+        safety_margin = budget.safety_margin,
+        budgeted_response_tokens = budget.response_tokens,
         final_max_tokens = max_tokens,
         "Prepared chat request context budget"
     );
@@ -388,6 +399,19 @@ fn prepare_request(
         },
         dropped,
     })
+}
+
+fn final_max_tokens(
+    context_size: u32,
+    actual_prompt_tokens: u32,
+    budget: ContextBudget,
+    hop_kind: HopKind,
+) -> u32 {
+    let remaining =
+        context_size.saturating_sub(budget.safety_margin + actual_prompt_tokens);
+    remaining
+        .clamp(MIN_RESPONSE_TOKENS, hop_kind.response_ceiling())
+        .min(budget.response_tokens)
 }
 
 fn is_web_context(message: &ChatMessage) -> bool {
@@ -571,11 +595,108 @@ mod tests {
 
     #[test]
     fn final_answer_hop_gets_full_ceiling_regardless_of_reasoning_hops() {
-        let budget_reasoning = dynamic_budget(32_768, 4_096, true, true, HopKind::Reasoning);
-        assert_eq!(budget_reasoning.response_tokens, REASONING_MAX_RESPONSE_TOKENS);
+        let history = vec![
+            ChatMessage {
+                role: "user".to_string(),
+                content: "Compare the weather and calculate the temperature difference."
+                    .to_string(),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+                tool_calls: Some(vec![serde_json::json!({
+                    "id": "weather-hop",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "{\"location\":\"Bangkok\"}"
+                    }
+                })]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: r#"{"temperature_c":31,"condition":"clear"}"#.to_string(),
+                tool_call_id: Some("weather-hop".to_string()),
+                name: Some("get_weather".to_string()),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+                tool_calls: Some(vec![serde_json::json!({
+                    "id": "calculator-hop",
+                    "type": "function",
+                    "function": {
+                        "name": "calculate",
+                        "arguments": "{\"expression\":\"31-24\"}"
+                    }
+                })]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: r#"{"result":7}"#.to_string(),
+                tool_call_id: Some("calculator-hop".to_string()),
+                name: Some("calculate".to_string()),
+                ..Default::default()
+            },
+        ];
+        let prior_hop_prompt_tokens = history
+            .iter()
+            .map(|message| {
+                ((message.content.chars().count() as u32).saturating_add(3) / 4)
+                    .max(1)
+                    .saturating_add(10)
+            })
+            .sum::<u32>()
+            .saturating_add(8);
+        let context_size = 16_384;
 
-        let budget_final = dynamic_budget(32_768, 4_096, true, true, HopKind::FinalAnswer);
-        assert_eq!(budget_final.response_tokens, FINAL_ANSWER_MAX_RESPONSE_TOKENS);
+        let reasoning_budget =
+            dynamic_budget(context_size, 4_096, false, false, HopKind::Reasoning);
+        assert_eq!(
+            final_max_tokens(
+                context_size,
+                prior_hop_prompt_tokens,
+                reasoning_budget,
+                HopKind::Reasoning,
+            ),
+            REASONING_MAX_RESPONSE_TOKENS
+        );
+
+        let final_budget =
+            dynamic_budget(context_size, 4_096, false, false, HopKind::FinalAnswer);
+        assert_eq!(
+            final_max_tokens(
+                context_size,
+                prior_hop_prompt_tokens,
+                final_budget,
+                HopKind::FinalAnswer,
+            ),
+            FINAL_ANSWER_MAX_RESPONSE_TOKENS
+        );
+    }
+
+    #[test]
+    fn final_answer_budget_only_shrinks_under_real_context_pressure() {
+        let context_size = 16_384;
+        let budget =
+            dynamic_budget(context_size, 4_096, false, false, HopKind::FinalAnswer);
+        let prompt_tokens = context_size
+            .saturating_sub(budget.safety_margin)
+            .saturating_sub(512);
+
+        assert_eq!(
+            final_max_tokens(
+                context_size,
+                prompt_tokens,
+                budget,
+                HopKind::FinalAnswer,
+            ),
+            512
+        );
     }
 
     #[test]

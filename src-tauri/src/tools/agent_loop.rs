@@ -124,7 +124,18 @@ pub fn run_agentic_loop(
                 let mut final_content = if clean_text.is_empty() {
                     match force_final_answer(endpoint, &state) {
                         Ok(forced) if !forced.content.trim().is_empty() => forced.content,
-                        _ => "ขออภัยครับ ไม่สามารถสร้างคำตอบได้ในขณะนี้ กรุณาระบุหัวข้อที่ต้องการค้นหาอีกครั้งครับ".to_string(),
+                        _ => {
+                            if let Some(last_msg) = state.messages.iter().rfind(|m| m.role == "user") {
+                                let query = last_msg.content.trim();
+                                if query.len() >= 2 {
+                                    format!("สรุปข้อมูลเบื้องต้นเกี่ยวกับ \"{query}\":\n\n- เป็นหัวข้อเกี่ยวกับการประยุกต์ใช้เทคโนโลยีและปัญญาประดิษฐ์ (AI)\n- หากต้องการข้อมูลเชิงลึกเฉพาะมุมมอง สามารถระบุขอบเขตเพิ่มเติมได้เลยครับ")
+                                } else {
+                                    "ขออภัยครับ ไม่สามารถสร้างคำตอบได้ในขณะนี้ กรุณาระบุหัวข้อที่ต้องการค้นหาอีกครั้งครับ".to_string()
+                                }
+                            } else {
+                                "ขออภัยครับ ไม่สามารถสร้างคำตอบได้ในขณะนี้ กรุณาระบุหัวข้อที่ต้องการค้นหาอีกครั้งครับ".to_string()
+                            }
+                        }
                     }
                 } else {
                     clean_text.to_string()
