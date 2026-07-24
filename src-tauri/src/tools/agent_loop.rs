@@ -118,7 +118,53 @@ pub fn run_agentic_loop(
 
         let response = request_chat_completion(endpoint, &per_hop_messages, Some(&formatted_tools), 1024)?;
 
-        match parse_loop_step_response(&response) {
+        let step_result = match parse_loop_step_response(&response) {
+            LoopStepResult::FinalAnswer { content: ref text, finish_reason: ref fr } if text.trim().is_empty() && state.iteration == 0 => {
+                if let Some(last_msg) = state.messages.iter().rfind(|m| m.role == "user") {
+                    let query = last_msg.content.trim();
+                    if !query.is_empty() {
+                        tracing::warn!(
+                            session_id = ?state.session_id,
+                            query = %query,
+                            "Model produced empty response on Hop 0; auto-recovering with fallback tool call"
+                        );
+                        let fallback_call = if query.contains("ช่วยหา") || query.contains("หาข้อมูล") || query.len() < 12 {
+                            RequestedToolCall {
+                                id: format!("call_opt_{}", uuid::Uuid::new_v4().simple()),
+                                name: "ask_user_clarification".to_string(),
+                                arguments: serde_json::json!({
+                                    "question": "ต้องการให้ช่วยค้นหาหรือวิเคราะห์ข้อมูลเกี่ยวกับหัวข้อใดครับ?",
+                                    "options": [
+                                        "เทคโนโลยีและปัญญาประดิษฐ์ (AI / Tech)",
+                                        "เศรษฐกิจ การเงิน และการลงทุน",
+                                        "ข่าวสารและเหตุการณ์ปัจจุบัน",
+                                        "หัวข้ออื่น ๆ (โปรดระบุ)"
+                                    ],
+                                    "reason": "Broad query initial clarification fallback"
+                                }),
+                            }
+                        } else {
+                            RequestedToolCall {
+                                id: format!("call_search_{}", uuid::Uuid::new_v4().simple()),
+                                name: "search_web".to_string(),
+                                arguments: serde_json::json!({ "query": query }),
+                            }
+                        };
+                        LoopStepResult::ToolCalls {
+                            calls: vec![fallback_call],
+                            content: "".to_string(),
+                        }
+                    } else {
+                        parse_loop_step_response(&response)
+                    }
+                } else {
+                    parse_loop_step_response(&response)
+                }
+            }
+            res => res,
+        };
+
+        match step_result {
             LoopStepResult::FinalAnswer { content: text, finish_reason } => {
                 let clean_text = text.trim();
                 let mut final_content = if clean_text.is_empty() {
