@@ -156,7 +156,7 @@ pub fn tool_catalog() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "ask_user_clarification".to_string(),
-            description: "Ask the user a clarifying question with 2-4 selectable options ONLY when the user's request genuinely lacks essential details, scope, or parameters needed to provide a good response.".to_string(),
+            description: "Ask the user a clarifying question with 2-4 selectable options ONLY when they have stated a request that is genuinely too broad or ambiguous to act on usefully. Do NOT call this for greetings ('สวัสดี', 'hello', 'hi'), acknowledgements, or simple conversational openers — respond to those directly with text and wait for the user's actual request. Example of when to use: user says 'อยากรู้เรื่องเทคโนโลยี' (broad topic, needs narrowing). Example of when NOT to use: user says 'สวัสดี' (a greeting — just greet back).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

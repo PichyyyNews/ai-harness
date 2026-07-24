@@ -294,11 +294,21 @@ pub async fn generate_chat(
             if !memory_summary.is_empty() {
                 routing_context = format!("[Active Memory Context]\n{}\n\n{}", memory_summary, routing_context);
             }
-            let _enhanced_intent = crate::tools::prompt_enhancer::enhance_prompt(
+            let enhanced_intent = crate::tools::prompt_enhancer::enhance_prompt(
                 engine.endpoint(),
                 &message.content,
                 &routing_context,
             );
+            if !enhanced_intent.trim().is_empty() && enhanced_intent.trim() != message.content.trim() {
+                tracing::info!(
+                    raw_input = %message.content,
+                    enhanced_intent = %enhanced_intent,
+                    "Prompt enhancer optimized user intent"
+                );
+                if let Some(user_idx) = request.messages.iter().rposition(|m| m.role == "user") {
+                    request.messages[user_idx].content = enhanced_intent;
+                }
+            }
         }
 
         // If user just selected a choice option, inject the resolution directive

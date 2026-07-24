@@ -610,7 +610,8 @@ fn parse_loop_step_response(res: &serde_json::Value) -> LoopStepResult {
                     arguments,
                 });
             }
-            return LoopStepResult::ToolCalls { calls: parsed_calls, content };
+            let cleaned_content = excise_tool_tag_syntax(&content);
+            return LoopStepResult::ToolCalls { calls: parsed_calls, content: cleaned_content };
         }
     }
 
@@ -621,13 +622,66 @@ fn parse_loop_step_response(res: &serde_json::Value) -> LoopStepResult {
             raw_content = %content,
             "Model emitted tool call as text tag fallback rather than native JSON tool_calls"
         );
-        return LoopStepResult::ToolCalls { calls: vec![text_call], content };
+        let cleaned_content = excise_tool_tag_syntax(&content);
+        return LoopStepResult::ToolCalls { calls: vec![text_call], content: cleaned_content };
     }
 
     LoopStepResult::FinalAnswer {
         content,
         finish_reason,
     }
+}
+
+fn excise_tool_tag_syntax(raw: &str) -> String {
+    let mut cleaned = raw.to_string();
+
+    // 1. Remove <|tool_call|>... tags
+    while let Some(start) = cleaned.find("<|tool_call|>") {
+        let after = &cleaned[start..];
+        let len = if let Some(end) = after.find("</|tool_call|>") {
+            end + 14
+        } else if let Some(end) = after.find("}\n") {
+            end + 2
+        } else if let Some(end) = after.rfind('}') {
+            end + 1
+        } else {
+            after.len()
+        };
+        cleaned.replace_range(start..start + len, "");
+    }
+
+    // 2. Remove standalone call:tool_name{...}
+    while let Some(start) = cleaned.find("call:") {
+        let after = &cleaned[start..];
+        let len = if let Some(end) = after.find('}') {
+            end + 1
+        } else {
+            after.len()
+        };
+        cleaned.replace_range(start..start + len, "");
+    }
+
+    // 3. Remove <function=tool_name>...</function>
+    while let Some(start) = cleaned.find("<function=") {
+        let after = &cleaned[start..];
+        let len = if let Some(end) = after.find("</function>") {
+            end + 11
+        } else if let Some(end) = after.find('>') {
+            end + 1
+        } else {
+            after.len()
+        };
+        cleaned.replace_range(start..start + len, "");
+    }
+
+    // 4. Remove any leftover tag markers
+    cleaned = cleaned
+        .replace("<|tool_calls|>", "")
+        .replace("</|tool_calls|>", "")
+        .replace("<|tool_call|>", "")
+        .replace("</|tool_call|>", "");
+
+    cleaned.trim().to_string()
 }
 
 fn parse_text_tool_call(content: &str) -> Option<RequestedToolCall> {
