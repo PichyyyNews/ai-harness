@@ -411,15 +411,19 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           return;
         }
 
-        if (cleanLine.includes("THINKING") || cleanLine.includes("► THINKING")) {
+        if (cleanLine === "► THINKING" || cleanLine === "THINKING" || cleanLine.startsWith("► THINKING")) {
           currentMode = "thinking";
           return;
         }
 
-        if (cleanLine.includes("ANSWER") || cleanLine.includes("► ANSWER")) {
+        if (cleanLine === "► ANSWER" || cleanLine === "ANSWER" || cleanLine.startsWith("► ANSWER")) {
           currentMode = "answer";
           return;
         }
+
+        // Clean off any leading ► THINKING or ► ANSWER prefixes if mixed on the line
+        const textLine = cleanLine.replace(/^►\s*(THINKING|ANSWER)\s*/i, "").trim();
+        if (!textLine) return;
 
         const isThinking = currentMode === "thinking";
         const isAnswer = currentMode === "answer" || currentMode === "none";
@@ -431,10 +435,10 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           if (isThinking) {
             return {
               ...msg,
-              process: [...processArr, cleanLine],
+              process: [...processArr, textLine],
             };
           } else if (isAnswer) {
-            const nextContent = msg.content ? `${msg.content}\n${cleanLine}` : cleanLine;
+            const nextContent = msg.content ? `${msg.content}\n${textLine}` : textLine;
             return {
               ...msg,
               process: processArr,
