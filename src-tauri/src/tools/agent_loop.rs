@@ -39,6 +39,16 @@ struct ChoiceOptionArg {
     label: Option<String>,
 }
 
+fn is_greeting_prompt(text: &str) -> bool {
+    let clean = text.trim().to_lowercase().replace(' ', "");
+    let greetings = [
+        "สวัสดี", "สวสัดี", "สวัสดีครับ", "สวัสดีค่ะ", "สวัสดีจ้า", "ดีครับ", "ดีค่ะ",
+        "หวัดดี", "หวัดดีครับ", "หวัดดีค่ะ", "hi", "hello", "hey", "greetings",
+        "goodmorning", "goodafternoon", "goodevening", "มอร์นิ่ง"
+    ];
+    greetings.iter().any(|g| clean == *g || clean == format!("{g}ครับ") || clean == format!("{g}ค่ะ"))
+}
+
 /// Runs the multi-hop agentic tool loop.
 /// The model evaluates current conversation context and decides whether to call tools
 /// or output a final answer. If tools are requested, they are executed, appended to context,
@@ -123,49 +133,60 @@ pub fn run_agentic_loop(
                 let clean_text = text.trim();
                 if let Some(last_msg) = state.messages.iter().rfind(|m| m.role == "user") {
                     let query = last_msg.content.trim();
-                    let is_broad_query = query.contains("ช่วยหา") || query.contains("หาข้อมูล") || query.contains("ค้นหา") || query.len() < 15;
-
-                    if state.iteration == 0 && (clean_text.is_empty() || is_broad_query) {
-                        tracing::info!(
-                            session_id = ?state.session_id,
-                            query = %query,
-                            "Broad query on Hop 0: executing search_web first before requesting user choice"
-                        );
-                        let search_call = RequestedToolCall {
-                            id: format!("call_search_{}", uuid::Uuid::new_v4().simple()),
-                            name: "search_web".to_string(),
-                            arguments: serde_json::json!({ "query": query }),
-                        };
-                        LoopStepResult::ToolCalls {
-                            calls: vec![search_call],
-                            content: "".to_string(),
-                        }
-                    } else if state.iteration == 1 && is_broad_query && (clean_text.is_empty() || clean_text.contains("•") || clean_text.contains("- ") || clean_text.contains("1.")) {
-                        tracing::info!(
-                            session_id = ?state.session_id,
-                            query = %query,
-                            "Post-search Hop 1: converting broad query search outcome into ask_user_clarification choice box UI"
-                        );
-                        let clarify_call = RequestedToolCall {
-                            id: format!("call_opt_{}", uuid::Uuid::new_v4().simple()),
-                            name: "ask_user_clarification".to_string(),
-                            arguments: serde_json::json!({
-                                "question": format!("จากข้อมูลที่ค้นพบเบื้องต้นเกี่ยวกับ \"{query}\": ต้องการให้สรุปหรือเจาะลึกในหัวข้อใดครับ?"),
-                                "options": [
-                                    "เทคโนโลยีและปัญญาประดิษฐ์ (AI / Tech)",
-                                    "เศรษฐกิจ การเงิน และการลงทุน",
-                                    "ข่าวสารและเหตุการณ์ปัจจุบัน",
-                                    "สรุปภาพรวมแบบครอบคลุมทั้งหมด"
-                                ],
-                                "reason": "Post-search clarification choice box"
-                            }),
-                        };
-                        LoopStepResult::ToolCalls {
-                            calls: vec![clarify_call],
-                            content: "".to_string(),
+                    if is_greeting_prompt(query) {
+                        LoopStepResult::FinalAnswer {
+                            content: if clean_text.is_empty() {
+                                "สวัสดีครับนิวส์ มีหัวข้อหรือประเด็นใดให้ผมช่วยค้นหาข้อมูลหรือวิเคราะห์ในวันนี้ไหมครับ?".to_string()
+                            } else {
+                                clean_text.to_string()
+                            },
+                            finish_reason: fr.clone(),
                         }
                     } else {
-                        parse_loop_step_response(&response)
+                        let is_broad_query = query.contains("ช่วยหา") || query.contains("หาข้อมูล") || query.contains("ค้นหา");
+
+                        if state.iteration == 0 && (clean_text.is_empty() || is_broad_query) {
+                            tracing::info!(
+                                session_id = ?state.session_id,
+                                query = %query,
+                                "Broad query on Hop 0: executing search_web first before requesting user choice"
+                            );
+                            let search_call = RequestedToolCall {
+                                id: format!("call_search_{}", uuid::Uuid::new_v4().simple()),
+                                name: "search_web".to_string(),
+                                arguments: serde_json::json!({ "query": query }),
+                            };
+                            LoopStepResult::ToolCalls {
+                                calls: vec![search_call],
+                                content: "".to_string(),
+                            }
+                        } else if state.iteration == 1 && is_broad_query {
+                            tracing::info!(
+                                session_id = ?state.session_id,
+                                query = %query,
+                                "Post-search Hop 1: converting broad query search outcome into ask_user_clarification choice box UI"
+                            );
+                            let clarify_call = RequestedToolCall {
+                                id: format!("call_opt_{}", uuid::Uuid::new_v4().simple()),
+                                name: "ask_user_clarification".to_string(),
+                                arguments: serde_json::json!({
+                                    "question": format!("จากข้อมูลที่ค้นพบเบื้องต้นเกี่ยวกับ \"{query}\": ต้องการให้สรุปหรือเจาะลึกในหัวข้อใดครับ?"),
+                                    "options": [
+                                        "เทคโนโลยีและปัญญาประดิษฐ์ (AI / Tech)",
+                                        "เศรษฐกิจ การเงิน และการลงทุน",
+                                        "ข่าวสารและเหตุการณ์ปัจจุบัน",
+                                        "สรุปภาพรวมแบบครอบคลุมทั้งหมด"
+                                    ],
+                                    "reason": "Post-search clarification choice box"
+                                }),
+                            };
+                            LoopStepResult::ToolCalls {
+                                calls: vec![clarify_call],
+                                content: "".to_string(),
+                            }
+                        } else {
+                            parse_loop_step_response(&response)
+                        }
                     }
                 } else {
                     parse_loop_step_response(&response)
@@ -183,8 +204,10 @@ pub fn run_agentic_loop(
                         _ => {
                             if let Some(last_msg) = state.messages.iter().rfind(|m| m.role == "user") {
                                 let query = last_msg.content.trim();
-                                if query.len() >= 2 {
-                                    format!("สรุปข้อมูลเบื้องต้นเกี่ยวกับ \"{query}\":\n\n- เป็นหัวข้อเกี่ยวกับการประยุกต์ใช้เทคโนโลยีและปัญญาประดิษฐ์ (AI)\n- หากต้องการข้อมูลเชิงลึกเฉพาะมุมมอง สามารถระบุขอบเขตเพิ่มเติมได้เลยครับ")
+                                if is_greeting_prompt(query) {
+                                    "สวัสดีครับนิวส์ มีหัวข้อหรือประเด็นใดให้ผมช่วยค้นหาข้อมูลหรือวิเคราะห์ในวันนี้ไหมครับ?".to_string()
+                                } else if query.len() >= 2 {
+                                    format!("ยินดีให้บริการครับ สำหรับหัวข้อ \"{query}\" นิวส์สามารถระบุรายละเอียดหรือขอบเขตเพิ่มเติมที่ต้องการให้ค้นหาได้เลยครับ")
                                 } else {
                                     "ขออภัยครับ ไม่สามารถสร้างคำตอบได้ในขณะนี้ กรุณาระบุหัวข้อที่ต้องการค้นหาอีกครั้งครับ".to_string()
                                 }
