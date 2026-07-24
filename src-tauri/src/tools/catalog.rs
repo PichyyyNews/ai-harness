@@ -25,7 +25,10 @@ pub struct ToolResult {
 
 #[derive(Debug, Clone)]
 pub enum LoopStepResult {
-    FinalAnswer(String),
+    FinalAnswer {
+        content: String,
+        finish_reason: Option<String>,
+    },
     ToolCalls(Vec<RequestedToolCall>),
 }
 

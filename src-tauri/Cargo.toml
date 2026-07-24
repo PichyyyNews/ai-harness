@@ -31,3 +31,6 @@ urlencoding = "2.1"
 uuid = { version = "1", features = ["v4"] }
 zip = "2.4.2"
 meval = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"

@@ -1,6 +1,7 @@
 mod commands;
 mod engine;
 mod language_classifier;
+pub mod logging;
 mod models;
 mod sessions;
 mod state;
@@ -8,6 +9,7 @@ mod web_search;
 pub mod tools;
 
 pub fn run() {
+    logging::init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(state::EngineState::default())

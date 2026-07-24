@@ -342,6 +342,7 @@ pub async fn generate_chat(
         // long-term personalization facts, cross-session RAG).
         // This must be injected ABOVE the tools system prompt so that
         // memory constraints can influence every tool decision the model makes.
+        let mut memory_reminder_for_loop = None;
         if state.memory_injection_enabled.load(std::sync::atomic::Ordering::SeqCst) {
             if let Some(session_id) = &session_id {
                 let user_msg_text = pending_user
@@ -377,23 +378,13 @@ pub async fn generate_chat(
                         },
                     );
                 }
-                if let Some(reminder) = tiered.reminder {
-                    // Reminder goes immediately before the user message for max salience
-                    let before_user = request
-                        .messages
-                        .iter()
-                        .rposition(|item| item.role == "user")
-                        .unwrap_or(request.messages.len());
-                    request.messages.insert(
-                        before_user,
-                        engine::ChatMessage {
-                            role: "system".to_string(),
-                            content: reminder,
-                            created_at: None,
-                            ..Default::default()
-                        },
-                    );
-                }
+                let memory_reminder_msg = tiered.reminder.map(|reminder| engine::ChatMessage {
+                    role: "system".to_string(),
+                    content: reminder,
+                    created_at: None,
+                    ..Default::default()
+                });
+
                 let counts = tiered.layer_counts;
                 if counts.active_constraints + counts.mid_term_items + counts.long_term_facts > 0 {
                     let _ = worker_app.emit(
@@ -408,6 +399,8 @@ pub async fn generate_chat(
                         },
                     );
                 }
+
+                memory_reminder_for_loop = memory_reminder_msg;
             }
         }
 
@@ -423,6 +416,7 @@ pub async fn generate_chat(
             embedding_ep_for_loop.as_deref(),
             session_id.as_deref(),
             request.messages.clone(),
+            memory_reminder_for_loop,
         )?;
 
         let result = match loop_outcome {

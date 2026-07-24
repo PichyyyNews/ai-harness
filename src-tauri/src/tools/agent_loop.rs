@@ -9,6 +9,7 @@ pub const DEFAULT_MAX_ITERATIONS: u32 = 8;
 
 pub struct AgentLoopState {
     pub messages: Vec<ChatMessage>,
+    pub memory_reminder: Option<ChatMessage>,
     pub iteration: u32,
     pub max_iterations: u32,
     pub session_id: Option<String>,
@@ -48,9 +49,11 @@ pub fn run_agentic_loop(
     embedding_endpoint: Option<&str>,
     session_id: Option<&str>,
     initial_messages: Vec<ChatMessage>,
+    memory_reminder: Option<ChatMessage>,
 ) -> Result<AgentLoopOutcome, String> {
     let mut state = AgentLoopState {
         messages: initial_messages,
+        memory_reminder,
         iteration: 0,
         max_iterations: DEFAULT_MAX_ITERATIONS,
         session_id: session_id.map(|s| s.to_string()),
@@ -58,6 +61,13 @@ pub fn run_agentic_loop(
         retrieval_trace: Vec::new(),
         thinking_steps: Vec::new(),
     };
+
+    tracing::info!(
+        session_id = ?state.session_id,
+        initial_message_count = state.messages.len(),
+        has_memory_reminder = state.memory_reminder.is_some(),
+        "Starting agentic tool loop"
+    );
 
     let tools = tool_catalog();
     let formatted_tools: Vec<serde_json::Value> = tools
@@ -76,14 +86,32 @@ pub fn run_agentic_loop(
 
     loop {
         if state.iteration >= state.max_iterations {
+            tracing::warn!(
+                session_id = ?state.session_id,
+                iteration = state.iteration,
+                "Reached max iterations ({}), forcing final answer",
+                state.max_iterations
+            );
             let final_res = force_final_answer(endpoint, &state)?;
             return Ok(AgentLoopOutcome::Completed(final_res));
         }
 
-        let response = request_chat_completion(endpoint, &state.messages, Some(&formatted_tools))?;
+        // Fix B: Re-anchor memory reminder block on EVERY hop at the end of prompt payload
+        let mut per_hop_messages = state.messages.clone();
+        if let Some(ref reminder) = state.memory_reminder {
+            per_hop_messages.retain(|m| m.content != reminder.content);
+            per_hop_messages.push(reminder.clone());
+            tracing::info!(
+                session_id = ?state.session_id,
+                iteration = state.iteration,
+                "Re-anchored memory reminder block at the end of prompt payload"
+            );
+        }
+
+        let response = request_chat_completion(endpoint, &per_hop_messages, Some(&formatted_tools))?;
 
         match parse_loop_step_response(&response) {
-            LoopStepResult::FinalAnswer(text) => {
+            LoopStepResult::FinalAnswer { content: text, finish_reason } => {
                 let clean_text = text.trim();
                 let mut final_content = if clean_text.is_empty() {
                     match force_final_answer(endpoint, &state) {
@@ -95,7 +123,15 @@ pub fn run_agentic_loop(
                 };
 
                 let mut continuations = 0;
-                while is_incomplete_text(&final_content) && continuations < 3 {
+                // Fix D1: finish_reason == Length triggers auto-continuation (language agnostic)
+                let is_length_cutoff = finish_reason.as_deref() == Some("length");
+                while (is_length_cutoff || is_incomplete_text(&final_content)) && continuations < 3 {
+                    tracing::info!(
+                        session_id = ?state.session_id,
+                        is_length_cutoff,
+                        continuation_turn = continuations + 1,
+                        "Triggering seamless continuation request"
+                    );
                     let mut cont_messages = state.messages.clone();
                     cont_messages.push(ChatMessage {
                         role: "assistant".to_string(),
@@ -109,7 +145,7 @@ pub fn run_agentic_loop(
                     });
 
                     if let Ok(cont_res) = request_chat_completion(endpoint, &cont_messages, None) {
-                        if let LoopStepResult::FinalAnswer(cont_text) = parse_loop_step_response(&cont_res) {
+                        if let LoopStepResult::FinalAnswer { content: cont_text, .. } = parse_loop_step_response(&cont_res) {
                             let trimmed_cont = cont_text.trim();
                             if !trimmed_cont.is_empty() {
                                 final_content.push(' ');
@@ -468,9 +504,15 @@ fn parse_loop_step_response(res: &serde_json::Value) -> LoopStepResult {
     let message = &choice["message"];
 
     let content = message["content"].as_str().unwrap_or("").trim().to_string();
+    let finish_reason = choice["finish_reason"].as_str().map(|s| s.to_string());
 
     if let Some(tool_calls) = message["tool_calls"].as_array() {
         if !tool_calls.is_empty() {
+            tracing::info!(
+                parse_method = "native",
+                tool_count = tool_calls.len(),
+                "Received native tool_calls array from model response"
+            );
             let mut parsed_calls = Vec::new();
             for (idx, tc) in tool_calls.iter().enumerate() {
                 let id = tc["id"]
@@ -522,10 +564,19 @@ fn parse_loop_step_response(res: &serde_json::Value) -> LoopStepResult {
     }
 
     if let Some(text_call) = parse_text_tool_call(&content) {
+        tracing::warn!(
+            parse_method = "text_tag_fallback",
+            tool_name = %text_call.name,
+            raw_content = %content,
+            "Model emitted tool call as text tag fallback rather than native JSON tool_calls"
+        );
         return LoopStepResult::ToolCalls(vec![text_call]);
     }
 
-    LoopStepResult::FinalAnswer(content)
+    LoopStepResult::FinalAnswer {
+        content,
+        finish_reason,
+    }
 }
 
 fn parse_text_tool_call(content: &str) -> Option<RequestedToolCall> {
