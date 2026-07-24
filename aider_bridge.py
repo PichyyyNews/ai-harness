@@ -32,13 +32,14 @@ def clean_answer_text(raw_text):
     if not raw_text:
         return ""
 
-    # Remove raw JSON payloads if accidentally attached
-    cleaned = re.sub(r'\{"type":.*\}', '', raw_text)
+    # 1. Remove any LLM-imitated JSON objects (e.g. {"type": "done", ...})
+    cleaned = re.sub(r'\{"type":\s*"done"[\s\S]*?\}', '', raw_text)
+    cleaned = re.sub(r'\{"type":[\s\S]*?\}', '', cleaned)
 
-    # Remove SEARCH/REPLACE blocks completely
+    # 2. Remove SEARCH/REPLACE blocks completely
     cleaned = re.sub(r'<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE', '', cleaned)
 
-    # Remove leftover ```python or ``` markdown blocks surrounding search replace
+    # 3. Remove leftover ```python or ``` markdown blocks surrounding search replace
     cleaned = re.sub(r'```[a-zA-Z]*\s*```', '', cleaned)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
@@ -128,6 +129,12 @@ def main():
         edit_format="diff",
         auto_commits=not args.no_auto_commits,
     )
+
+    # Clean previous JSON hallucinations out of chat history if present
+    if hasattr(coder, "done_messages"):
+        for msg in coder.done_messages:
+            if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
+                msg["content"] = re.sub(r'\{"type":\s*"done"[\s\S]*?\}', '', msg["content"])
 
     try:
         raw_res = coder.run(args.prompt) or ""
