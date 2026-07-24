@@ -108,7 +108,15 @@ pub fn run_agentic_loop(
             );
         }
 
-        let response = request_chat_completion(endpoint, &per_hop_messages, Some(&formatted_tools))?;
+        tracing::info!(
+            session_id = ?state.session_id,
+            iteration = state.iteration,
+            is_final_answer_hop = false,
+            max_tokens = 1024,
+            "Sending chat completion request for reasoning/tool hop"
+        );
+
+        let response = request_chat_completion(endpoint, &per_hop_messages, Some(&formatted_tools), 1024)?;
 
         match parse_loop_step_response(&response) {
             LoopStepResult::FinalAnswer { content: text, finish_reason } => {
@@ -135,7 +143,9 @@ pub fn run_agentic_loop(
                         session_id = ?state.session_id,
                         is_length_cutoff,
                         continuation_turn = continuations + 1,
-                        "Triggering seamless continuation request"
+                        is_final_answer_hop = true,
+                        max_tokens = 4096,
+                        "Triggering seamless continuation request for final answer"
                     );
 
                     let mut cont_messages = state.messages.clone();
@@ -150,7 +160,7 @@ pub fn run_agentic_loop(
                         ..Default::default()
                     });
 
-                    if let Ok(cont_res) = request_chat_completion(endpoint, &cont_messages, None) {
+                    if let Ok(cont_res) = request_chat_completion(endpoint, &cont_messages, None, 4096) {
                         if let LoopStepResult::FinalAnswer { content: cont_text, finish_reason: next_finish } = parse_loop_step_response(&cont_res) {
                             let before_len = final_content.len();
                             stitch_continuation_text(&mut final_content, &cont_text);
@@ -462,6 +472,7 @@ fn request_chat_completion(
     endpoint: &str,
     messages: &[ChatMessage],
     tools: Option<&[serde_json::Value]>,
+    max_tokens: u32,
 ) -> Result<serde_json::Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600)) // 10 minutes timeout for slow local inference
@@ -471,7 +482,7 @@ fn request_chat_completion(
     let mut payload = serde_json::json!({
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 4096,
+        "max_tokens": max_tokens,
         "stream": false,
     });
 
@@ -528,7 +539,7 @@ fn request_chat_completion(
             let fallback_payload = serde_json::json!({
                 "messages": sanitized_messages,
                 "temperature": 0.7,
-                "max_tokens": 4096,
+                "max_tokens": max_tokens,
                 "stream": false,
             });
             if let Ok(retry_res) = client
@@ -914,7 +925,13 @@ fn force_final_answer(endpoint: &str, state: &AgentLoopState) -> Result<Generati
         name: None,
         created_at: None,
     });
-    let response = request_chat_completion(endpoint, &msgs, None)?;
+    tracing::info!(
+        session_id = ?state.session_id,
+        is_final_answer_hop = true,
+        max_tokens = 4096,
+        "Sending chat completion request for forced final answer hop"
+    );
+    let response = request_chat_completion(endpoint, &msgs, None, 4096)?;
     let content = response["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or("")

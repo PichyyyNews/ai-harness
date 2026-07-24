@@ -51,6 +51,15 @@ Go through this literally, item by item, after implementing `02-upgrade-implemen
 
 ---
 
+## G — Token Budget Isolation per Hop (Bug J)
+
+- [ ] Log `max_tokens`, `iteration`, and `is_final_answer_hop` for every chat completion request
+- [ ] Tool/reasoning hops use dedicated `1024` max_tokens budget
+- [ ] Final answer and continuation hops receive their own full, independent `4096` max_tokens budget (unaffected by prior reasoning hops)
+- [ ] A short final answer preceded by 2+ reasoning hops never truncates
+
+---
+
 ## If Something's Still Failing After All This
 
 Go back to `01-root-cause-audit.md` and check whether the failure matches one of the four root causes exactly, or whether it's a **new** failure mode — if new, it needs its own root-cause analysis (using the same discipline: find the actual code path, don't guess) rather than being folded into these existing fixes. Resist the urge to add another hardcoded special case as a quick patch — that's the exact pattern that created Root Causes A and D in the first place.
