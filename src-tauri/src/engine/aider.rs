@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -20,7 +21,7 @@ pub struct AiderEventPayload {
     pub content: String,
 }
 
-/// Executes a prompt using Aider in the specified workspace directory,
+/// Executes a prompt using the embedded/cloned Aider engine,
 /// streaming stdout/stderr back to the Tauri frontend in real time.
 pub async fn execute_aider_prompt(
     app: AppHandle,
@@ -52,19 +53,30 @@ pub async fn execute_aider_prompt(
 
         let auto_commits = config.auto_commits.unwrap_or(true);
 
+        // Path to embedded Aider repository
+        let embedded_aider_dir = Path::new(&workspace).join("aider");
+        let python_path = if embedded_aider_dir.exists() {
+            embedded_aider_dir.to_string_lossy().to_string()
+        } else {
+            "c:\\Users\\Newsk\\Downloads\\Aphelion\\aider".to_string()
+        };
+
         tracing::info!(
             session_id = %session_id,
             workspace = %workspace,
             model = %model_arg,
             api_base = %api_base,
+            python_path = %python_path,
             "Launching Aider sidecar process"
         );
 
-        let mut cmd = Command::new("aider");
+        let mut cmd = Command::new("python");
         cmd.current_dir(&workspace);
         cmd.env("OPENAI_API_BASE", &api_base);
         cmd.env("OPENAI_API_KEY", &api_key);
+        cmd.env("PYTHONPATH", &python_path);
 
+        cmd.arg("-m").arg("aider.main");
         cmd.arg("--model").arg(&model_arg);
         cmd.arg("--message").arg(&prompt);
         cmd.arg("--yes-always");
@@ -87,7 +99,7 @@ pub async fn execute_aider_prompt(
             Ok(c) => c,
             Err(e) => {
                 let err_msg = format!(
-                    "Failed to launch 'aider' executable: {}. Ensure aider is installed via 'pip install aider-chat'.",
+                    "Failed to launch Aider engine: {}. Ensure Python is installed.",
                     e
                 );
                 let _ = app.emit(

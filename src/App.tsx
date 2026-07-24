@@ -362,11 +362,14 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     let unlisten: (() => void) | undefined;
     void listen<{ session_id: string; event_type: string; content: string }>("aider-event", (event) => {
       const { event_type, content } = event.payload;
-      if (event_type === "stdout" || event_type === "stderr") {
+      if (event_type === "stdout" || event_type === "stderr" || event_type === "error") {
         setMessages((current) => current.map((msg, idx) => idx === current.length - 1 && msg.role === "assistant"
-          ? { ...msg, process: [...(msg.process ?? []), content] }
+          ? {
+              ...msg,
+              process: (msg.process ?? []).filter(p => p !== "⚡ Launching embedded Aider engine...").concat(content)
+            }
           : msg));
-      } else if (event_type === "done" || event_type === "error") {
+      } else if (event_type === "done") {
         setStreaming(false);
       }
     }).then((h) => { unlisten = h; });
@@ -573,7 +576,10 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       if (!activeMsgs.some((m) => m.role === "user" && m.content === content)) {
         activeMsgs.push(userMessage);
       }
-      return [...activeMsgs, { role: "assistant", content: "", process: ["Starting request and checking what needs live information"], retrievalTrace: [] }];
+      const initialProcess = isAiderMode
+        ? ["⚡ Launching embedded Aider engine..."]
+        : ["Starting request and checking what needs live information"];
+      return [...activeMsgs, { role: "assistant", content: "", process: initialProcess, retrievalTrace: [] }];
     });
 
     const requestMessages = [...messages.filter((m) => !m.isQueued), userMessage];
@@ -591,7 +597,11 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           ? { ...msg, content: result || "Aider coding task completed." }
           : msg));
       } catch (error) {
-        setToast(`Aider error: ${String(error)}`);
+        const errStr = String(error);
+        setToast(`Aider error: ${errStr}`);
+        setMessages((current) => current.map((msg, idx) => idx === current.length - 1 && msg.role === "assistant"
+          ? { ...msg, process: (msg.process ?? []).concat(`❌ ${errStr}`) }
+          : msg));
       } finally {
         setStreaming(false);
       }
