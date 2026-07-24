@@ -494,9 +494,41 @@ fn request_chat_completion(
 
         // If 400 was returned when tools were provided, retry without tools in case model/server lacks tool template support
         if status.as_u16() == 400 && tools.is_some() {
+            let sanitized_messages: Vec<ChatMessage> = messages
+                .iter()
+                .map(|m| {
+                    if m.role == "tool" {
+                        ChatMessage {
+                            role: "user".to_string(),
+                            content: format!("[Tool Output]: {}", m.content),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            name: None,
+                            created_at: None,
+                        }
+                    } else if m.role == "assistant" && m.tool_calls.is_some() {
+                        ChatMessage {
+                            role: "assistant".to_string(),
+                            content: if m.content.is_empty() {
+                                "[Executing requested tool action...]".to_string()
+                            } else {
+                                m.content.clone()
+                            },
+                            tool_calls: None,
+                            tool_call_id: None,
+                            name: None,
+                            created_at: None,
+                        }
+                    } else {
+                        m.clone()
+                    }
+                })
+                .collect();
+
             let fallback_payload = serde_json::json!({
-                "messages": messages,
+                "messages": sanitized_messages,
                 "temperature": 0.7,
+                "max_tokens": 4096,
                 "stream": false,
             });
             if let Ok(retry_res) = client
