@@ -372,8 +372,15 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       }
     };
 
-    void listen<{ session_id: string; event_type: string; content: string }>("aider-event", (event) => {
-      const { event_type, content: rawContent } = event.payload;
+    void listen<{
+      session_id: string;
+      event_type: string;
+      content: string;
+      thinking?: string[];
+      edited_files?: string[];
+    }>("aider-event", (event) => {
+      const { event_type, content: rawContent, thinking, edited_files } = event.payload;
+
       if (event_type === "stdout" || event_type === "stderr" || event_type === "error") {
         const cleanLine = decodeUnicodeStr(rawContent).trim();
 
@@ -450,6 +457,24 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       } else if (event_type === "done") {
         setStreaming(false);
         currentMode = "none";
+
+        setMessages((current) => current.map((msg, idx) => {
+          if (idx !== current.length - 1 || msg.role !== "assistant") return msg;
+
+          let cleanContent = rawContent ? decodeUnicodeStr(rawContent).trim() : msg.content;
+
+          // Append edited files badge if present
+          if (edited_files && edited_files.length > 0) {
+            const fileBadges = edited_files.map(f => `✏️ **Created/Edited:** \`${f}\``).join("\n");
+            cleanContent = cleanContent ? `${cleanContent}\n\n${fileBadges}` : fileBadges;
+          }
+
+          return {
+            ...msg,
+            process: (thinking && thinking.length > 0) ? thinking : (msg.process ?? []),
+            content: cleanContent,
+          };
+        }));
       }
     }).then((h) => { unlisten = h; });
     return () => unlisten?.();

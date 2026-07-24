@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import json
+import re
 
 # Add local embedded Aider directory to Python module search path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -13,50 +14,67 @@ from aider.io import InputOutput
 from aider.models import Model
 from aider.coders import Coder
 
-# CLI noise substrings to suppress completely
-NOISE_SUBSTRINGS = (
-    "Can't initialize prompt toolkit",
-    "Terminal does not support",
-    "Tokens:",
-    "Has it been deleted",
-    "Repo-map:",
-    "Git repo:",
-    "Model:",
-    "Aider v",
-    "Commit ",
-    "Applied edit",
-    "ไม่มีคำสั่ง shell",
-    "Summarization failed",
-    "summarizer unexpectedly",
-    "Warning for",
-    "https://aider.chat",
-    "Scanning repo",
-    "Initial repo scan",
-    "You can skip this check",
-    "Added .aider*",
-)
-
 class BridgeInputOutput(InputOutput):
-    """Native Aider InputOutput handler streaming clean JSON events to stdout without prompt-toolkit noise."""
+    """Silent InputOutput handler preventing stdout noise during execution."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, pretty=False, yes=True)
 
     def tool_output(self, status="", bold=False):
-        if status and status.strip():
-            clean = status.strip()
-            if any(noise in clean for noise in NOISE_SUBSTRINGS):
-                return
-            print(json.dumps({"type": "stdout", "content": clean}, ensure_ascii=False), flush=True)
+        pass
 
     def tool_error(self, message):
-        if message and message.strip():
-            clean = message.strip()
-            if any(noise in clean for noise in NOISE_SUBSTRINGS):
-                return
-            print(json.dumps({"type": "stderr", "content": clean}, ensure_ascii=False), flush=True)
+        pass
 
     def tool_warning(self, message):
         pass
+
+def clean_answer_text(raw_text):
+    if not raw_text:
+        return ""
+
+    # Remove SEARCH/REPLACE blocks completely
+    cleaned = re.sub(r'<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE', '', raw_text)
+
+    # Remove leftover ```python or ``` markdown blocks surrounding search replace
+    cleaned = re.sub(r'```[a-zA-Z]*\s*```', '', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+
+    return cleaned
+
+def parse_aider_output(full_res):
+    if not full_res:
+        return [], ""
+
+    thinking_lines = []
+    answer_lines = []
+    current_mode = "answer"
+
+    for line in full_res.splitlines():
+        line_str = line.strip()
+        if not line_str:
+            continue
+
+        if "► THINKING" in line_str or line_str == "THINKING":
+            current_mode = "thinking"
+            continue
+        elif "► ANSWER" in line_str or line_str == "ANSWER":
+            current_mode = "answer"
+            continue
+
+        # Strip leading ► THINKING or ► ANSWER if attached
+        clean = re.sub(r'^►\s*(THINKING|ANSWER)\s*', '', line_str).strip()
+        if not clean:
+            continue
+
+        if current_mode == "thinking":
+            thinking_lines.append(clean)
+        else:
+            answer_lines.append(clean)
+
+    raw_answer = "\n".join(answer_lines)
+    clean_answer = clean_answer_text(raw_answer)
+
+    return thinking_lines, clean_answer
 
 def main():
     parser = argparse.ArgumentParser(description="Aphelion Native Aider Python API Bridge")
@@ -95,10 +113,30 @@ def main():
     )
 
     try:
-        res = coder.run(args.prompt)
-        print(json.dumps({"type": "done", "content": res or ""}, ensure_ascii=False), flush=True)
+        raw_res = coder.run(args.prompt) or ""
+        thinking, content = parse_aider_output(raw_res)
+
+        # Collect edited files
+        edited_files = []
+        if hasattr(coder, "coder_commit_hashes") and coder.coder_commit_hashes:
+            edited_files = list(coder.get_inchat_relative_files())
+        elif hasattr(coder, "abs_fnames"):
+            edited_files = [coder.get_rel_fname(f) for f in coder.abs_fnames]
+
+        payload = {
+            "type": "done",
+            "thinking": thinking,
+            "content": content,
+            "edited_files": edited_files,
+        }
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+
     except Exception as e:
-        print(json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False), flush=True)
+        err_payload = {
+            "type": "error",
+            "content": str(e),
+        }
+        print(json.dumps(err_payload, ensure_ascii=False), flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":

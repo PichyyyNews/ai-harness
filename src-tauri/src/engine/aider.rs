@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -19,6 +18,8 @@ pub struct AiderEventPayload {
     pub session_id: String,
     pub event_type: String, // "stdout", "stderr", "done", "error"
     pub content: String,
+    pub thinking: Option<Vec<String>>,
+    pub edited_files: Option<Vec<String>>,
 }
 
 /// Executes a prompt using Aphelion's native Python API Bridge (aider_bridge.py),
@@ -104,6 +105,8 @@ pub async fn execute_aider_prompt(
                         session_id: session_id.clone(),
                         event_type: "error".to_string(),
                         content: err_msg.clone(),
+                        thinking: None,
+                        edited_files: None,
                     },
                 );
                 return Err(err_msg);
@@ -124,11 +127,12 @@ pub async fn execute_aider_prompt(
                 full_output.push_str(&line);
                 full_output.push('\n');
 
-                // Check if line is a JSON event object from bridge
                 let trimmed = line.trim();
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                     let evt_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("stdout");
                     let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let thinking = val.get("thinking").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
+                    let edited_files = val.get("edited_files").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
 
                     let _ = app_clone1.emit(
                         "aider-event",
@@ -136,15 +140,8 @@ pub async fn execute_aider_prompt(
                             session_id: session_id1.clone(),
                             event_type: evt_type.to_string(),
                             content,
-                        },
-                    );
-                } else if !trimmed.starts_with('{') {
-                    let _ = app_clone1.emit(
-                        "aider-event",
-                        AiderEventPayload {
-                            session_id: session_id1.clone(),
-                            event_type: "stdout".to_string(),
-                            content: line,
+                            thinking,
+                            edited_files,
                         },
                     );
                 }
@@ -164,6 +161,8 @@ pub async fn execute_aider_prompt(
                         session_id: session_id2.clone(),
                         event_type: "stderr".to_string(),
                         content: line,
+                        thinking: None,
+                        edited_files: None,
                     },
                 );
             }
@@ -181,6 +180,8 @@ pub async fn execute_aider_prompt(
                 session_id: session_id.clone(),
                 event_type: event_type.to_string(),
                 content: String::new(),
+                thinking: None,
+                edited_files: None,
             },
         );
 
