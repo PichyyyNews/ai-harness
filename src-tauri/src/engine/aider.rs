@@ -144,6 +144,25 @@ pub async fn execute_aider_prompt(
                             edited_files,
                         },
                     );
+                } else if let Some(pos) = trimmed.find("{\"type\":") {
+                    let json_part = &trimmed[pos..];
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_part) {
+                        let evt_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("stdout");
+                        let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let thinking = val.get("thinking").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
+                        let edited_files = val.get("edited_files").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
+
+                        let _ = app_clone1.emit(
+                            "aider-event",
+                            AiderEventPayload {
+                                session_id: session_id1.clone(),
+                                event_type: evt_type.to_string(),
+                                content,
+                                thinking,
+                                edited_files,
+                            },
+                        );
+                    }
                 }
             }
             full_output

@@ -32,8 +32,11 @@ def clean_answer_text(raw_text):
     if not raw_text:
         return ""
 
+    # Remove raw JSON payloads if accidentally attached
+    cleaned = re.sub(r'\{"type":.*\}', '', raw_text)
+
     # Remove SEARCH/REPLACE blocks completely
-    cleaned = re.sub(r'<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE', '', raw_text)
+    cleaned = re.sub(r'<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE', '', cleaned)
 
     # Remove leftover ```python or ``` markdown blocks surrounding search replace
     cleaned = re.sub(r'```[a-zA-Z]*\s*```', '', cleaned)
@@ -129,6 +132,10 @@ def main():
             "content": content,
             "edited_files": edited_files,
         }
+        
+        # Ensure payload is on a fresh newline
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         print(json.dumps(payload, ensure_ascii=False), flush=True)
 
     except Exception as e:
@@ -136,6 +143,8 @@ def main():
             "type": "error",
             "content": str(e),
         }
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         print(json.dumps(err_payload, ensure_ascii=False), flush=True)
         sys.exit(1)
 
