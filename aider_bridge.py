@@ -13,6 +13,29 @@ from aider.io import InputOutput
 from aider.models import Model
 from aider.coders import Coder
 
+# CLI noise substrings to suppress completely
+NOISE_SUBSTRINGS = (
+    "Can't initialize prompt toolkit",
+    "Terminal does not support",
+    "Tokens:",
+    "Has it been deleted",
+    "Repo-map:",
+    "Git repo:",
+    "Model:",
+    "Aider v",
+    "Commit ",
+    "Applied edit",
+    "ไม่มีคำสั่ง shell",
+    "Summarization failed",
+    "summarizer unexpectedly",
+    "Warning for",
+    "https://aider.chat",
+    "Scanning repo",
+    "Initial repo scan",
+    "You can skip this check",
+    "Added .aider*",
+)
+
 class BridgeInputOutput(InputOutput):
     """Native Aider InputOutput handler streaming clean JSON events to stdout without prompt-toolkit noise."""
     def __init__(self, *args, **kwargs):
@@ -21,19 +44,18 @@ class BridgeInputOutput(InputOutput):
     def tool_output(self, status="", bold=False):
         if status and status.strip():
             clean = status.strip()
-            if "Can't initialize prompt toolkit" in clean or "Terminal does not support" in clean:
+            if any(noise in clean for noise in NOISE_SUBSTRINGS):
                 return
-            print(json.dumps({"type": "stdout", "content": clean}), flush=True)
+            print(json.dumps({"type": "stdout", "content": clean}, ensure_ascii=False), flush=True)
 
     def tool_error(self, message):
         if message and message.strip():
             clean = message.strip()
-            if "Can't initialize prompt toolkit" in clean or "Terminal does not support" in clean:
+            if any(noise in clean for noise in NOISE_SUBSTRINGS):
                 return
-            print(json.dumps({"type": "stderr", "content": clean}), flush=True)
+            print(json.dumps({"type": "stderr", "content": clean}, ensure_ascii=False), flush=True)
 
     def tool_warning(self, message):
-        # Suppress warnings in API mode
         pass
 
 def main():
@@ -47,15 +69,12 @@ def main():
 
     args = parser.parse_args()
 
-    # Set OpenAI API environment variables
     os.environ["OPENAI_API_BASE"] = args.api_base
     os.environ["OPENAI_API_KEY"] = args.api_key
 
-    # Ensure workspace directory exists and change into it
     os.makedirs(args.workspace, exist_ok=True)
     os.chdir(args.workspace)
 
-    # Initialize git repo in workspace if missing
     git_dir = os.path.join(args.workspace, ".git")
     if not os.path.exists(git_dir):
         os.system("git init > nul 2>&1" if os.name == "nt" else "git init > /dev/null 2>&1")
@@ -77,9 +96,9 @@ def main():
 
     try:
         res = coder.run(args.prompt)
-        print(json.dumps({"type": "done", "result": res or ""}), flush=True)
+        print(json.dumps({"type": "done", "content": res or ""}, ensure_ascii=False), flush=True)
     except Exception as e:
-        print(json.dumps({"type": "error", "content": str(e)}), flush=True)
+        print(json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False), flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":

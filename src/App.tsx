@@ -377,9 +377,10 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
       if (event_type === "stdout" || event_type === "stderr" || event_type === "error") {
         const cleanLine = decodeUnicodeStr(rawContent).trim();
 
-        // Skip CLI noise & header lines
+        // Skip CLI noise, header lines & leaked JSON payloads
         if (
           !cleanLine ||
+          cleanLine.startsWith("{") ||
           cleanLine.includes("Can't initialize prompt toolkit") ||
           cleanLine.includes("Terminal does not support") ||
           cleanLine.includes("Warning for") ||
@@ -396,6 +397,12 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           cleanLine.includes("Note: in-chat filenames") ||
           cleanLine.includes("Summarization failed") ||
           cleanLine.includes("summarizer unexpectedly") ||
+          cleanLine.includes("Process exited with status") ||
+          cleanLine.includes("Commit ") ||
+          cleanLine.includes("Applied edit") ||
+          cleanLine.includes("ไม่มีคำสั่ง shell") ||
+          cleanLine.includes("You can skip this check") ||
+          cleanLine.includes("Added .aider*") ||
           cleanLine.startsWith("---") ||
           cleanLine.startsWith("===") ||
           cleanLine.startsWith("Tokens:") ||
