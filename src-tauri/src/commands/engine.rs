@@ -305,9 +305,7 @@ pub async fn generate_chat(
                     enhanced_intent = %enhanced_intent,
                     "Prompt enhancer optimized user intent"
                 );
-                if let Some(user_idx) = request.messages.iter().rposition(|m| m.role == "user") {
-                    request.messages[user_idx].content = enhanced_intent;
-                }
+                // Preserve original raw user input in request.messages to prevent contaminating search queries & summaries
             }
         }
 

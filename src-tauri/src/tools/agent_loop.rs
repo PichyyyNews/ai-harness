@@ -119,39 +119,49 @@ pub fn run_agentic_loop(
         let response = request_chat_completion(endpoint, &per_hop_messages, Some(&formatted_tools), 1024)?;
 
         let step_result = match parse_loop_step_response(&response) {
-            LoopStepResult::FinalAnswer { content: ref text, finish_reason: ref fr } if text.trim().is_empty() && state.iteration == 0 => {
+            LoopStepResult::FinalAnswer { content: ref text, finish_reason: ref fr } => {
+                let clean_text = text.trim();
                 if let Some(last_msg) = state.messages.iter().rfind(|m| m.role == "user") {
                     let query = last_msg.content.trim();
-                    if !query.is_empty() {
-                        tracing::warn!(
+                    let is_broad_query = query.contains("ช่วยหา") || query.contains("หาข้อมูล") || query.contains("ค้นหา") || query.len() < 15;
+
+                    if state.iteration == 0 && (clean_text.is_empty() || is_broad_query) {
+                        tracing::info!(
                             session_id = ?state.session_id,
                             query = %query,
-                            "Model produced empty response on Hop 0; auto-recovering with fallback tool call"
+                            "Broad query on Hop 0: executing search_web first before requesting user choice"
                         );
-                        let fallback_call = if query.contains("ช่วยหา") || query.contains("หาข้อมูล") || query.len() < 12 {
-                            RequestedToolCall {
-                                id: format!("call_opt_{}", uuid::Uuid::new_v4().simple()),
-                                name: "ask_user_clarification".to_string(),
-                                arguments: serde_json::json!({
-                                    "question": "ต้องการให้ช่วยค้นหาหรือวิเคราะห์ข้อมูลเกี่ยวกับหัวข้อใดครับ?",
-                                    "options": [
-                                        "เทคโนโลยีและปัญญาประดิษฐ์ (AI / Tech)",
-                                        "เศรษฐกิจ การเงิน และการลงทุน",
-                                        "ข่าวสารและเหตุการณ์ปัจจุบัน",
-                                        "หัวข้ออื่น ๆ (โปรดระบุ)"
-                                    ],
-                                    "reason": "Broad query initial clarification fallback"
-                                }),
-                            }
-                        } else {
-                            RequestedToolCall {
-                                id: format!("call_search_{}", uuid::Uuid::new_v4().simple()),
-                                name: "search_web".to_string(),
-                                arguments: serde_json::json!({ "query": query }),
-                            }
+                        let search_call = RequestedToolCall {
+                            id: format!("call_search_{}", uuid::Uuid::new_v4().simple()),
+                            name: "search_web".to_string(),
+                            arguments: serde_json::json!({ "query": query }),
                         };
                         LoopStepResult::ToolCalls {
-                            calls: vec![fallback_call],
+                            calls: vec![search_call],
+                            content: "".to_string(),
+                        }
+                    } else if state.iteration == 1 && is_broad_query && (clean_text.is_empty() || clean_text.contains("•") || clean_text.contains("- ") || clean_text.contains("1.")) {
+                        tracing::info!(
+                            session_id = ?state.session_id,
+                            query = %query,
+                            "Post-search Hop 1: converting broad query search outcome into ask_user_clarification choice box UI"
+                        );
+                        let clarify_call = RequestedToolCall {
+                            id: format!("call_opt_{}", uuid::Uuid::new_v4().simple()),
+                            name: "ask_user_clarification".to_string(),
+                            arguments: serde_json::json!({
+                                "question": format!("จากข้อมูลที่ค้นพบเบื้องต้นเกี่ยวกับ \"{query}\": ต้องการให้สรุปหรือเจาะลึกในหัวข้อใดครับ?"),
+                                "options": [
+                                    "เทคโนโลยีและปัญญาประดิษฐ์ (AI / Tech)",
+                                    "เศรษฐกิจ การเงิน และการลงทุน",
+                                    "ข่าวสารและเหตุการณ์ปัจจุบัน",
+                                    "สรุปภาพรวมแบบครอบคลุมทั้งหมด"
+                                ],
+                                "reason": "Post-search clarification choice box"
+                            }),
+                        };
+                        LoopStepResult::ToolCalls {
+                            calls: vec![clarify_call],
                             content: "".to_string(),
                         }
                     } else {
@@ -888,7 +898,7 @@ fn parse_text_tool_call(content: &str) -> Option<RequestedToolCall> {
 }
 
 fn parse_text_numbered_options(content: &str) -> Option<RequestedToolCall> {
-    if content.contains("###") || content.contains("---") || content.contains("=====") {
+    if content.contains("###") || content.contains("####") || content.contains("=====") {
         return None;
     }
 
