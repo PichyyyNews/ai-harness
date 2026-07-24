@@ -355,22 +355,84 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const replacementContent = useRef("");
   const [promptQueue, setPromptQueue] = useState<string[]>([]);
   const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
-  const [isAiderMode, setIsAiderMode] = useState(false);
+  const [isAiderMode, setIsAiderMode] = useState(true);
   const [workspacePath, setWorkspacePath] = useState("c:\\Users\\Newsk\\Downloads\\Aphelion");
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let currentMode: "thinking" | "answer" | "none" = "none";
+
+    const decodeUnicodeStr = (str: string) => {
+      try {
+        return str.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) =>
+          String.fromCharCode(parseInt(code, 16))
+        );
+      } catch {
+        return str;
+      }
+    };
+
     void listen<{ session_id: string; event_type: string; content: string }>("aider-event", (event) => {
-      const { event_type, content } = event.payload;
+      const { event_type, content: rawContent } = event.payload;
       if (event_type === "stdout" || event_type === "stderr" || event_type === "error") {
-        setMessages((current) => current.map((msg, idx) => idx === current.length - 1 && msg.role === "assistant"
-          ? {
+        const cleanLine = decodeUnicodeStr(rawContent).trim();
+
+        // Skip CLI noise & header lines
+        if (
+          !cleanLine ||
+          cleanLine.includes("Can't initialize prompt toolkit") ||
+          cleanLine.includes("Terminal does not support") ||
+          cleanLine.includes("Warning for") ||
+          cleanLine.includes("https://aider.chat") ||
+          cleanLine.includes("Scanning repo") ||
+          cleanLine.includes("Aider v") ||
+          cleanLine.includes("Model:") ||
+          cleanLine.includes("Git repo:") ||
+          cleanLine.includes("Repo-map:") ||
+          cleanLine.includes("Initial repo scan") ||
+          cleanLine.includes("Has it been deleted") ||
+          cleanLine.startsWith("---") ||
+          cleanLine.startsWith("===") ||
+          cleanLine.startsWith("Tokens:")
+        ) {
+          return;
+        }
+
+        if (cleanLine.includes("THINKING") || cleanLine.includes("► THINKING")) {
+          currentMode = "thinking";
+          return;
+        }
+
+        if (cleanLine.includes("ANSWER") || cleanLine.includes("► ANSWER")) {
+          currentMode = "answer";
+          return;
+        }
+
+        const isThinking = currentMode === "thinking";
+        const isAnswer = currentMode === "answer" || currentMode === "none";
+
+        setMessages((current) => current.map((msg, idx) => {
+          if (idx !== current.length - 1 || msg.role !== "assistant") return msg;
+          const processArr = (msg.process ?? []).filter(p => p !== "⚡ Launching embedded Aider engine...");
+
+          if (isThinking) {
+            return {
               ...msg,
-              process: (msg.process ?? []).filter(p => p !== "⚡ Launching embedded Aider engine...").concat(content)
-            }
-          : msg));
+              process: [...processArr, cleanLine],
+            };
+          } else if (isAnswer) {
+            const nextContent = msg.content ? `${msg.content}\n${cleanLine}` : cleanLine;
+            return {
+              ...msg,
+              process: processArr,
+              content: nextContent,
+            };
+          }
+          return msg;
+        }));
       } else if (event_type === "done") {
         setStreaming(false);
+        currentMode = "none";
       }
     }).then((h) => { unlisten = h; });
     return () => unlisten?.();
@@ -537,6 +599,7 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
     setActiveSessionModelId(undefined);
     setMessages([]);
     setDraft("");
+    setWorkspacePath("");
   };
 
   const sendMessage = async (
@@ -915,10 +978,8 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
         {messages.map((message, index) => {
           const isStreamingMessage = streaming && message.role === "assistant" && index === messages.length - 1;
           return <article className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage}`} key={`${message.role}-${index}`}>
-            {message.role === "assistant" && isAiderMode ? (
-              <DiffPreviewCard logs={message.process ?? []} isDone={!isStreamingMessage} />
-            ) : (
-              message.role === "assistant" && <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} sources={message.sources ?? []} streaming={isStreamingMessage} />
+            {message.role === "assistant" && (
+              <ThinkingSummary process={message.process ?? []} retrievalTrace={message.retrievalTrace ?? []} sources={message.sources ?? []} streaming={isStreamingMessage} />
             )}
             {message.role === "assistant" ? (
               <MarkdownMessage content={message.content} sources={message.sources ?? []} streaming={isStreamingMessage} />
@@ -947,12 +1008,20 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
             onDismiss={() => setPendingChoice(null)}
           />
         )}
-      <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-        <Textarea aria-label="Message the model" placeholder={engineStarted ? (streaming ? "Type next prompt to queue..." : "Message AI Harness") : "Start the local engine to begin chatting"} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} disabled={!engineStarted} rows={2} />
+      <form className={styles.composer} onSubmit={(event) => { event.preventDefault(); if (workspacePath) void sendMessage(); }}>
+        <Textarea
+          aria-label="Message the model"
+          placeholder={!workspacePath ? "กรุณาเลือกโฟลเดอร์โครงการ (Workspace Folder) ด้านบนเพื่อเริ่มคุยกับ Agent..." : engineStarted ? (streaming ? "Type next prompt to queue..." : "Message AI Harness") : "Start the local engine to begin chatting"}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && workspacePath) { event.preventDefault(); void sendMessage(); } }}
+          disabled={!engineStarted || !workspacePath}
+          rows={2}
+        />
         <div className={styles.composerFooter}>
           <div className={styles.composerMeta}>
             <Plus aria-hidden="true" />
-            <span>{streaming ? "Generating" : engineStarted ? "Local engine" : "Engine offline"}</span>
+            <span>{!workspacePath ? "Workspace Required" : streaming ? "Generating" : engineStarted ? "Local engine" : "Engine offline"}</span>
             {promptQueue.length > 0 && <span className={styles.queueCountBadge}>{promptQueue.length} queued</span>}
           </div>
           <div className={styles.composerRightActions}>
@@ -960,7 +1029,7 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
             {streaming ? (
               <div className={styles.streamingControlGroup}>
                 {draft.trim() && (
-                  <Button type="submit" size="sm" iconPrefix={<Plus weight="bold" />}>
+                  <Button type="submit" size="sm" iconPrefix={<Plus weight="bold" />} disabled={!workspacePath}>
                     Queue ({promptQueue.length + 1})
                   </Button>
                 )}
@@ -974,12 +1043,11 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
                     setPromptQueue([]);
                     streamAbort.current?.abort();
                   }}
-                  aria-label="Stop generating and clear queue"
-                  title="Stop generating & clear queue"
+                  title="Stop generating"
                 />
               </div>
             ) : (
-              <Button type="submit" className={styles.composerRoundAction} disabled={!engineStarted || !draft.trim()} iconPrefix={<ArrowUp weight="bold" />} aria-label="Send message" />
+              <Button type="submit" variant="primary" className={styles.composerRoundAction} iconPrefix={<ArrowUp weight="bold" />} disabled={!engineStarted || !draft.trim() || !workspacePath} title="Send message" />
             )}
           </div>
         </div>

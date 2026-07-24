@@ -80,6 +80,8 @@ pub async fn execute_aider_prompt(
 
         cmd.arg("-m").arg("aider.main");
         cmd.arg("--model").arg(&model_arg);
+        cmd.arg("--edit-format").arg("diff");
+        cmd.arg("--no-show-model-warnings");
         cmd.arg("--message").arg(&prompt);
         cmd.arg("--yes-always");
 
