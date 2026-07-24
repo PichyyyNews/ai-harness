@@ -525,6 +525,40 @@ pub fn run_agentic_loop(
     }
 }
 
+fn trim_messages_for_context(messages: &[ChatMessage], target_prompt_token_budget: u32) -> Vec<ChatMessage> {
+    let mut system_msgs = Vec::new();
+    let mut non_system_msgs = Vec::new();
+
+    for m in messages {
+        if m.role == "system" {
+            system_msgs.push(m.clone());
+        } else {
+            non_system_msgs.push(m.clone());
+        }
+    }
+
+    let system_chars: usize = system_msgs.iter().map(|m| m.content.len()).sum();
+    let system_tokens = (system_chars / 3) as u32;
+    let available_non_system_tokens = target_prompt_token_budget.saturating_sub(system_tokens).max(512);
+
+    let mut kept_non_system: Vec<ChatMessage> = Vec::new();
+    let mut used_tokens = 0u32;
+
+    for m in non_system_msgs.into_iter().rev() {
+        let m_tokens = (m.content.len() / 3) as u32;
+        if !kept_non_system.is_empty() && used_tokens.saturating_add(m_tokens) > available_non_system_tokens {
+            break;
+        }
+        kept_non_system.push(m);
+        used_tokens = used_tokens.saturating_add(m_tokens);
+    }
+    kept_non_system.reverse();
+
+    let mut result = system_msgs;
+    result.extend(kept_non_system);
+    result
+}
+
 fn request_chat_completion(
     endpoint: &str,
     messages: &[ChatMessage],
@@ -536,10 +570,16 @@ fn request_chat_completion(
         .build()
         .map_err(|e| e.to_string())?;
 
+    // Pre-flight context budget check: target <= 2,600 prompt tokens so (prompt + max_tokens) <= 3,800 < 4,096 context size
+    let trimmed_messages = trim_messages_for_context(messages, 2600);
+    let prompt_chars: usize = trimmed_messages.iter().map(|m| m.content.len()).sum();
+    let est_prompt_tokens = (prompt_chars / 3) as u32;
+    let safe_max_tokens = max_tokens.min(3800_u32.saturating_sub(est_prompt_tokens)).max(256);
+
     let mut payload = serde_json::json!({
-        "messages": messages,
+        "messages": trimmed_messages,
         "temperature": 0.7,
-        "max_tokens": max_tokens,
+        "max_tokens": safe_max_tokens,
         "stream": false,
     });
 
@@ -560,9 +600,35 @@ fn request_chat_completion(
     if !status.is_success() {
         let err_body = response.text().unwrap_or_default();
 
-        // If 400 was returned when tools were provided, retry without tools in case model/server lacks tool template support
+        // 1. If 400 Bad Request due to context size, perform emergency truncation & retry with minimal prompt & max_tokens=1024
+        if status.as_u16() == 400 && (err_body.contains("exceed") || err_body.contains("context_size")) {
+            tracing::warn!(
+                err_body = %err_body,
+                "llama-server context size exceeded (400 Bad Request); executing emergency prompt truncation & retry"
+            );
+            let emergency_messages = trim_messages_for_context(messages, 1500);
+            let emergency_payload = serde_json::json!({
+                "messages": emergency_messages,
+                "temperature": 0.7,
+                "max_tokens": 1024,
+                "stream": false,
+            });
+            if let Ok(retry_res) = client
+                .post(format!("{endpoint}/v1/chat/completions"))
+                .json(&emergency_payload)
+                .send()
+            {
+                if retry_res.status().is_success() {
+                    return retry_res
+                        .json()
+                        .map_err(|e| format!("Failed to parse llama-server JSON response: {e}"));
+                }
+            }
+        }
+
+        // 2. If 400 was returned when tools were provided, retry without tools in case model/server lacks tool template support
         if status.as_u16() == 400 && tools.is_some() {
-            let sanitized_messages: Vec<ChatMessage> = messages
+            let sanitized_messages: Vec<ChatMessage> = trimmed_messages
                 .iter()
                 .map(|m| {
                     if m.role == "tool" {
@@ -596,7 +662,7 @@ fn request_chat_completion(
             let fallback_payload = serde_json::json!({
                 "messages": sanitized_messages,
                 "temperature": 0.7,
-                "max_tokens": max_tokens,
+                "max_tokens": safe_max_tokens.min(1024),
                 "stream": false,
             });
             if let Ok(retry_res) = client
