@@ -41,6 +41,21 @@
   flex: 1;
 }
 
+.choiceQuestion p {
+  margin: 0;
+  display: inline;
+}
+
+.choiceLabelText {
+  flex: 1;
+  word-break: break-word;
+}
+
+.choiceLabelText p {
+  margin: 0;
+  display: inline;
+}
+
 .choiceOptions {
   display: flex;
   flex-direction: column;

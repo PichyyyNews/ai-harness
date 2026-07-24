@@ -30,10 +30,16 @@ pub struct ChatRequest {
     pub interaction_option_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
     #[serde(skip_serializing, default)]
     pub created_at: Option<String>,
 }
@@ -76,6 +82,8 @@ pub struct GenerationResult {
     pub sources: Vec<WebSource>,
     #[serde(default)]
     pub retrieval_trace: Vec<RetrievalTraceEntry>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thinking_summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,9 +492,10 @@ impl Engine {
             .send()
             .map_err(|error| format!("Could not send the message to llama-server: {error}"))?;
         if !response.status().is_success() {
+            let status = response.status();
+            let err_body = response.text().unwrap_or_default();
             return Err(format!(
-                "llama-server rejected the message (HTTP {}).",
-                response.status()
+                "llama-server rejected the message (HTTP {status}): {err_body}"
             ));
         }
         let reader = BufReader::new(response);
@@ -532,11 +541,12 @@ impl Engine {
             }
         }
         Ok(GenerationResult {
-            content: output,
-            finish_reason,
-            sources: Vec::new(),
-            retrieval_trace: Vec::new(),
-        })
+        content: output,
+        finish_reason: finish_reason,
+        sources: Vec::new(),
+        retrieval_trace: Vec::new(),
+        thinking_summary: None,
+    })
     }
 
     pub fn log_repetition_abort(
@@ -588,6 +598,7 @@ impl Engine {
                 role: "user".to_string(),
                 content: "Reply with exactly: OK".to_string(),
                 created_at: None,
+                ..Default::default()
             }],
             max_tokens: Some(24),
             temperature: Some(0.2),

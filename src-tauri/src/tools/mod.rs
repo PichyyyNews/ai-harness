@@ -5,10 +5,82 @@ pub mod models;
 pub mod planner;
 pub mod system;
 pub mod workspace;
+pub mod agent_loop;
+pub mod prompt_enhancer;
+pub mod catalog;
 
 use tauri::AppHandle;
+use serde_json::Value;
+use uuid::Uuid;
 
-pub fn execute_tool(app: &AppHandle, name: &str, raw_args: &str) -> Result<String, String> {
+pub struct ToolExecutionResult {
+    pub content: String,
+    pub sources: Vec<crate::web_search::WebSource>,
+    pub retrieval_trace: Vec<crate::web_search::RetrievalTraceEntry>,
+}
+
+pub fn execute_tool(
+    app: &AppHandle,
+    endpoint: Option<&str>,
+    embedding_endpoint: Option<&str>,
+    name: &str,
+    raw_args: &str,
+) -> Result<ToolExecutionResult, String> {
+    let clean_name = name.trim();
+    
+    if clean_name == "search_web" {
+        let clean_args = raw_args.trim();
+        let parsed_json: Option<Value> = serde_json::from_str(clean_args).ok();
+        let query = extract_arg(&parsed_json, clean_args, "query");
+
+        let plan = crate::web_search::QueryPlan {
+            original_query: query.clone(),
+            sub_questions: vec![crate::web_search::SubQuestion {
+                id: Uuid::new_v4(),
+                text: query.clone(),
+                source_hint: crate::web_search::SourceHint::GeneralWeb,
+                depends_on: None,
+            }],
+            is_compound: false,
+        };
+
+        return match crate::web_search::orchestrator::run_adaptive_pipeline(
+            app,
+            endpoint.unwrap_or_default(),
+            embedding_endpoint,
+            plan,
+            &[],
+            8_000,
+            |_msg| {},
+        ) {
+            Some(grounding) => Ok(ToolExecutionResult {
+                content: grounding.prompt,
+                sources: grounding.sources,
+                retrieval_trace: grounding.retrieval_trace,
+            }),
+            None => Ok(ToolExecutionResult {
+                content: format!("Web search for '{query}' completed. No current evidence was retrieved."),
+                sources: vec![],
+                retrieval_trace: vec![],
+            }),
+        };
+    }
+
+    let content = execute_tool_string(app, endpoint, embedding_endpoint, name, raw_args)?;
+    Ok(ToolExecutionResult {
+        content,
+        sources: vec![],
+        retrieval_trace: vec![],
+    })
+}
+
+fn execute_tool_string(
+    app: &AppHandle,
+    _endpoint: Option<&str>,
+    _embedding_endpoint: Option<&str>,
+    name: &str,
+    raw_args: &str,
+) -> Result<String, String> {
     let clean_name = name.trim();
     let clean_args = raw_args.trim();
 
@@ -71,9 +143,30 @@ fn parse_single_arg(args: &str) -> Option<String> {
     }
 }
 
+fn extract_arg(parsed: &Option<Value>, raw_args: &str, key: &str) -> String {
+    if let Some(p) = parsed {
+        if let Some(val) = p.get(key) {
+            if let Some(s) = val.as_str() {
+                return s.to_string();
+            }
+            return val.to_string();
+        }
+    }
+    parse_single_arg(raw_args).unwrap_or(raw_args.to_string())
+}
+
 pub fn tools_system_prompt() -> String {
-    r#"[Answer synthesis]
-The host has already routed tools and user interactions. Use supplied evidence and native tool results as authoritative. Answer the user's request directly with a useful best-effort overview when it is broad; do not turn a broad request into a request to narrow the scope. Never print tool syntax, internal plans, or a fake interactive-choice list. Only the host may request a native interaction.
+    r#"[System Core Directives - Tool & Interaction Execution]
+You are an intelligent autonomous AI assistant capable of multi-step tool execution and native UI interaction.
+
+1. MANDATORY WEB SEARCH / GROUNDING:
+When the user asks about any specific topic, concept (such as AI, LLMs, current news, technology, facts, places, weather, currency, or prices), YOU MUST CALL `search_web` OR RELEVANT TOOLS FIRST before answering. Gather up-to-date facts to ground your response.
+
+2. NATIVE USER CHOICE UI (CRITICAL):
+If the user's prompt is broad (e.g. "อยากหาข้อมูล", "อยากให้ช่วยหาข้อมูล"), DO NOT write plain text intro sentences, bullet points (such as • or - or 1. 2.), or markdown lists in your answer! Instead, YOU MUST IMMEDIATELY CALL THE `ask_user_clarification` TOOL natively with a `question` string and an array of `options` (2 to 4 options).
+
+3. RESPONSE COMPLETENESS:
+Always complete your thoughts and synthesize tool results clearly. Never stop mid-sentence.
 "#
     .to_string()
 }

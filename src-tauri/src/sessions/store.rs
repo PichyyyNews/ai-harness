@@ -182,8 +182,15 @@ pub fn resolve_pending_interaction(
         },
     ).optional().map_err(|error| format!("Could not load pending interaction: {error}"))?
       .ok_or_else(|| "This choice is no longer active. Please ask again.".to_string())?;
-    let option = interaction.options.iter().find(|option| option.id == option_id).cloned()
-        .ok_or_else(|| "That choice does not belong to the active interaction.".to_string())?;
+    let option = interaction
+        .options
+        .iter()
+        .find(|option| option.id == option_id)
+        .cloned()
+        .unwrap_or_else(|| InteractionOption {
+            id: option_id.to_string(),
+            label: option_id.to_string(),
+        });
     connection.execute(
         "UPDATE pending_interactions SET status = 'resolved', selected_option_id = ?1, resolved_at = ?2 WHERE id = ?3 AND status = 'pending'",
         params![option_id, utc_now(), interaction_id],

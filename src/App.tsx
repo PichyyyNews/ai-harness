@@ -357,10 +357,21 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
   const [pendingChoice, setPendingChoice] = useState<PendingChoice | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<PendingChoice>("ai-interaction-request", (event) => {
+    let unlistenFn: (() => void) | undefined;
+    let isCancelled = false;
+    void listen<PendingChoice>("ai-interaction-request", (event) => {
       setPendingChoice(event.payload);
+    }).then((cleanup) => {
+      if (isCancelled) {
+        cleanup();
+      } else {
+        unlistenFn = cleanup;
+      }
     });
-    return () => { unlisten.then((f) => f()); };
+    return () => {
+      isCancelled = true;
+      unlistenFn?.();
+    };
   }, []);
   const promptQueueRef = useRef<string[]>([]);
 
@@ -869,13 +880,10 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
             options={pendingChoice.options}
             disabled={streaming}
             onSubmit={(optionId, answer) => {
-              if (!optionId) {
-                onNotify("Custom responses are not available for this required choice. Select an option or skip it.");
-                return;
-              }
+              const selectedOptionId = optionId ?? answer;
               setPendingChoice(null);
               setDraft("");
-              void sendMessage(answer, { id: pendingChoice.id, optionId });
+              void sendMessage(answer, { id: pendingChoice.id, optionId: selectedOptionId });
             }}
             onDismiss={() => setPendingChoice(null)}
           />

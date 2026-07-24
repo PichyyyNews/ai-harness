@@ -163,6 +163,7 @@ pub fn system_message(context: &TimeContext) -> ChatMessage {
         role: "system".to_string(),
         content: context.to_system_prompt_header(),
         created_at: None,
+        ..Default::default()
     }
 }
 
@@ -251,6 +252,7 @@ pub fn inject_gap_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
                     role: "system".to_string(),
                     content: format_gap_marker(elapsed, current),
                     created_at: Some(current.to_rfc3339()),
+                    ..Default::default()
                 });
             }
         }
@@ -288,7 +290,7 @@ mod tests {
     use chrono::{FixedOffset, TimeZone};
 
     fn message(role: &str, content: &str, timestamp: &str) -> ChatMessage {
-        ChatMessage { role: role.to_string(), content: content.to_string(), created_at: Some(timestamp.to_string()) }
+        ChatMessage { role: role.to_string(), content: content.to_string(), created_at: Some(timestamp.to_string()), ..Default::default() }
     }
 
     #[test]

@@ -183,6 +183,7 @@ where
                     finish_reason: result.finish_reason,
                     sources: Vec::new(),
                     retrieval_trace: Vec::new(),
+                    thinking_summary: None,
                 });
             }
             FinishReason::Length if continuation == MAX_AUTO_CONTINUATIONS => {
@@ -191,6 +192,7 @@ where
                     finish_reason: FinishReason::Length,
                     sources: Vec::new(),
                     retrieval_trace: Vec::new(),
+                    thinking_summary: None,
                 });
             }
             FinishReason::Length => {
@@ -201,11 +203,13 @@ where
                     role: "assistant".to_string(),
                     content: result.content,
                     created_at: None,
+                    ..Default::default()
                 });
                 history.push(ChatMessage {
                     role: "user".to_string(),
                     content: "Continue exactly where the previous answer ended. Do not repeat text; preserve the language and Markdown structure.".to_string(),
                     created_at: None,
+                    ..Default::default()
                 });
             }
         }
@@ -251,6 +255,7 @@ fn prepare_request(
                 memory.summary
             ),
             created_at: None,
+            ..Default::default()
         });
     }
     fit_system_context(
@@ -453,8 +458,8 @@ fn compact_dropped_messages(
     let summary_prompt = ChatRequest {
         messages: vec![
             time_manager::system_message(time_context),
-            ChatMessage { role: "system".to_string(), content: "You are an automated context summarization module. Maintain a concise private memory of the conversation. Preserve facts, decisions, preferences, and unresolved tasks. STRICT TEMPORAL RULES: never use relative time words such as today, yesterday, tomorrow, this morning, or just now. Convert temporal references into explicit ISO dates or absolute timestamps using the timestamps supplied in the conversation log. Do not add commentary.".to_string(), created_at: None },
-            ChatMessage { role: "user".to_string(), content: format!("Existing memory:\n{}\n\nNew conversation turns to compact (timestamps are UTC):\n{}\n\nReturn an updated memory in under 180 words.", memory.summary, source), created_at: None },
+            ChatMessage { role: "system".to_string(), content: "You are an automated context summarization module. Maintain a concise private memory of the conversation. Preserve facts, decisions, preferences, and unresolved tasks. STRICT TEMPORAL RULES: never use relative time words such as today, yesterday, tomorrow, this morning, or just now. Convert temporal references into explicit ISO dates or absolute timestamps using the timestamps supplied in the conversation log. Do not add commentary.".to_string(), created_at: None, ..Default::default() },
+            ChatMessage { role: "user".to_string(), content: format!("Existing memory:\n{}\n\nNew conversation turns to compact (timestamps are UTC):\n{}\n\nReturn an updated memory in under 180 words.", memory.summary, source), created_at: None, ..Default::default() },
         ],
         max_tokens: Some(256),
         temperature: Some(0.3),
@@ -525,6 +530,7 @@ mod tests {
             role: "system".to_string(),
             content: original.clone(),
             created_at: None,
+            ..Default::default()
         }];
         assert!(!shrink_message_to_floor(
             &mut messages,

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ChatCircleDots, ArrowUp } from "@phosphor-icons/react";
 import styles from "./InteractiveChoiceBox.module.css";
 
@@ -13,7 +15,7 @@ export interface InteractiveChoiceBoxProps {
   onDismiss?: () => void;
 }
 
-export function InteractiveChoiceBox({ question, options, disabled = false, allowCustom = false, onSubmit, onDismiss }: InteractiveChoiceBoxProps) {
+export function InteractiveChoiceBox({ question, options, disabled = false, allowCustom = true, onSubmit, onDismiss }: InteractiveChoiceBoxProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [customText, setCustomText] = useState("");
   const isCustom = selectedIndex === -1;
@@ -36,7 +38,9 @@ export function InteractiveChoiceBox({ question, options, disabled = false, allo
         <div className={styles.choiceIcon}>
           <ChatCircleDots size={16} weight="bold" />
         </div>
-        <div className={styles.choiceQuestion}>{question}</div>
+        <div className={styles.choiceQuestion}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{question}</ReactMarkdown>
+        </div>
       </div>
 
       <div className={styles.choiceOptions}>
@@ -51,7 +55,9 @@ export function InteractiveChoiceBox({ question, options, disabled = false, allo
             <div className={`${styles.choiceRadio} ${selectedIndex === index ? styles.choiceRadioSelected : ""}`}>
               {selectedIndex === index && <div className={styles.choiceRadioDot} />}
             </div>
-            <span>{option.label}</span>
+            <div className={styles.choiceLabelText}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{option.label}</ReactMarkdown>
+            </div>
           </button>
         ))}
 
@@ -65,7 +71,9 @@ export function InteractiveChoiceBox({ question, options, disabled = false, allo
           <div className={`${styles.choiceRadio} ${isCustom ? styles.choiceRadioSelected : ""}`}>
             {isCustom && <div className={styles.choiceRadioDot} />}
           </div>
-          <span>Custom response…</span>
+          <div className={styles.choiceLabelText}>
+            <span>อื่นๆ (พิมพ์ระบุเอง...) / Custom response…</span>
+          </div>
         </button>}
 
         {allowCustom && isCustom && (
