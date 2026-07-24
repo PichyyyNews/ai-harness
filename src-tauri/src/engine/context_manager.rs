@@ -3,11 +3,19 @@ use std::collections::HashSet;
 
 const SAFETY_MARGIN_PERCENT: u32 = 6;
 const DEFAULT_RESPONSE_TOKENS: u32 = 1_024;
-const MAX_RESPONSE_TOKENS: u32 = 1_536;
 const MIN_RESPONSE_TOKENS: u32 = 256;
 const MAX_AUTO_CONTINUATIONS: usize = 3;
 const MIN_MEMORY_TOKENS: u32 = 256;
 const MAX_MEMORY_TOKENS: u32 = 768;
+
+pub const REASONING_MAX_RESPONSE_TOKENS: u32 = 1_024;
+pub const FINAL_ANSWER_MAX_RESPONSE_TOKENS: u32 = 4_096;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HopKind {
+    Reasoning,
+    FinalAnswer,
+}
 
 #[derive(Default)]
 pub struct ConversationMemory {
@@ -56,14 +64,19 @@ fn dynamic_budget(
     requested_tokens: u32,
     has_web: bool,
     has_memory: bool,
+    hop_kind: HopKind,
 ) -> ContextBudget {
+    let response_ceiling = match hop_kind {
+        HopKind::Reasoning => REASONING_MAX_RESPONSE_TOKENS,
+        HopKind::FinalAnswer => FINAL_ANSWER_MAX_RESPONSE_TOKENS,
+    };
     let safety_margin = (context_size.saturating_mul(SAFETY_MARGIN_PERCENT) / 100).max(128);
     let usable = context_size.saturating_sub(safety_margin);
     let minimum_response = (context_size / 10).clamp(MIN_RESPONSE_TOKENS, 640);
     let response_cap =
-        (context_size.saturating_mul(32) / 100).clamp(minimum_response, MAX_RESPONSE_TOKENS);
+        (context_size.saturating_mul(32) / 100).clamp(minimum_response, response_ceiling);
     let response_tokens = requested_tokens
-        .clamp(MIN_RESPONSE_TOKENS, MAX_RESPONSE_TOKENS)
+        .clamp(MIN_RESPONSE_TOKENS, response_ceiling)
         .min(response_cap)
         .max(minimum_response);
     let prompt_tokens = usable.saturating_sub(response_tokens);
@@ -94,6 +107,7 @@ pub fn generate_with_recovery<F, P>(
     request: ChatRequest,
     memory: &mut ConversationMemory,
     time_context: &time_manager::TimeContext,
+    hop_kind: HopKind,
     mut emit: F,
     mut observe_prepared_request: P,
     should_cancel: impl Fn() -> bool,
@@ -124,6 +138,7 @@ where
             temperature,
             memory,
             time_context,
+            hop_kind,
         )?;
         if !prepared.dropped.is_empty() {
             emit(super::runtime::GenerationEvent::Status(
@@ -147,6 +162,7 @@ where
             temperature,
             memory,
             time_context,
+            hop_kind,
         )?;
         if !prepared.dropped.is_empty() {
             emit(super::runtime::GenerationEvent::Status(
@@ -167,38 +183,54 @@ where
             temperature,
             memory,
             time_context,
+            hop_kind,
         )?;
 
         emit(super::runtime::GenerationEvent::Status(
             "Writing response".to_string(),
         ))?;
         observe_prepared_request(&prepared.request);
+
         let result = engine.generate(prepared.request, |event| emit(event), &should_cancel)?;
         full_output.push_str(&result.content);
 
-        match result.finish_reason {
+        let finish_reason = result.finish_reason.clone();
+
+        if should_cancel() {
+            return Ok(GenerationResult {
+                content: full_output,
+                finish_reason,
+                sources: result.sources,
+                retrieval_trace: result.retrieval_trace,
+                thinking_summary: result.thinking_summary,
+            });
+        }
+
+        match finish_reason {
             FinishReason::Stop | FinishReason::Cancelled | FinishReason::RepetitionDetected => {
                 return Ok(GenerationResult {
                     content: full_output,
-                    finish_reason: result.finish_reason,
-                    sources: Vec::new(),
-                    retrieval_trace: Vec::new(),
-                    thinking_summary: None,
-                });
-            }
-            FinishReason::Length if continuation == MAX_AUTO_CONTINUATIONS => {
-                return Ok(GenerationResult {
-                    content: full_output,
-                    finish_reason: FinishReason::Length,
-                    sources: Vec::new(),
-                    retrieval_trace: Vec::new(),
-                    thinking_summary: None,
+                    finish_reason,
+                    sources: result.sources,
+                    retrieval_trace: result.retrieval_trace,
+                    thinking_summary: result.thinking_summary,
                 });
             }
             FinishReason::Length => {
-                // Keep the partial answer in the next prompt. llama-server uses
-                // the GGUF's native template for every request, so this remains
-                // model-family-correct instead of hand-building prompt markers.
+                if continuation == MAX_AUTO_CONTINUATIONS {
+                    return Ok(GenerationResult {
+                        content: full_output,
+                        finish_reason: FinishReason::Length,
+                        sources: result.sources,
+                        retrieval_trace: result.retrieval_trace,
+                        thinking_summary: result.thinking_summary,
+                    });
+                }
+
+                // Append the partial assistant answer and a explicit continuation user turn.
+                // Using two distinct messages lets the model follow its native
+                // chat template; we stitch `full_output` locally before returning
+                // so the user sees a single uninterrupted response block.
                 history.push(ChatMessage {
                     role: "assistant".to_string(),
                     content: result.content,
@@ -225,11 +257,16 @@ fn prepare_request(
     temperature: Option<f32>,
     memory: &ConversationMemory,
     time_context: &time_manager::TimeContext,
+    hop_kind: HopKind,
 ) -> Result<PreparedRequest, String> {
     let context = engine.context_size();
     let has_web = history.iter().any(is_web_context);
     let has_memory = history.iter().any(is_memory_context);
-    let budget = dynamic_budget(context, requested_tokens, has_web, has_memory);
+    let budget = dynamic_budget(context, requested_tokens, has_web, has_memory, hop_kind);
+    let response_ceiling = match hop_kind {
+        HopKind::Reasoning => REASONING_MAX_RESPONSE_TOKENS,
+        HopKind::FinalAnswer => FINAL_ANSWER_MAX_RESPONSE_TOKENS,
+    };
 
     let mut kept = vec![time_manager::system_message(time_context)];
     for message in history.iter().filter(|message| message.role == "system") {
@@ -329,8 +366,17 @@ fn prepare_request(
     let actual_prompt_tokens = engine.count_messages_tokens(&kept);
     let remaining = context.saturating_sub(budget.safety_margin + actual_prompt_tokens);
     let max_tokens = remaining
-        .clamp(MIN_RESPONSE_TOKENS, MAX_RESPONSE_TOKENS)
+        .clamp(MIN_RESPONSE_TOKENS, response_ceiling)
         .min(budget.response_tokens);
+
+    tracing::info!(
+        hop_kind = ?hop_kind,
+        requested_tokens,
+        response_ceiling,
+        actual_prompt_tokens,
+        final_max_tokens = max_tokens,
+        "Prepared chat request context budget"
+    );
     Ok(PreparedRequest {
         request: ChatRequest {
             messages: kept,
@@ -519,8 +565,17 @@ mod tests {
 
     #[test]
     fn reserves_nonzero_memory_budget_under_context_pressure() {
-        let budget = dynamic_budget(4_096, 1_536, true, true);
+        let budget = dynamic_budget(4_096, 1_536, true, true, HopKind::FinalAnswer);
         assert!(budget.memory_tokens >= MIN_MEMORY_TOKENS);
+    }
+
+    #[test]
+    fn final_answer_hop_gets_full_ceiling_regardless_of_reasoning_hops() {
+        let budget_reasoning = dynamic_budget(32_768, 4_096, true, true, HopKind::Reasoning);
+        assert_eq!(budget_reasoning.response_tokens, REASONING_MAX_RESPONSE_TOKENS);
+
+        let budget_final = dynamic_budget(32_768, 4_096, true, true, HopKind::FinalAnswer);
+        assert_eq!(budget_final.response_tokens, FINAL_ANSWER_MAX_RESPONSE_TOKENS);
     }
 
     #[test]

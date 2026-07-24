@@ -966,7 +966,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].id, "call_123");
                 assert_eq!(calls[0].name, "ask_user_clarification");
@@ -986,7 +986,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::FinalAnswer(content) => {
+            LoopStepResult::FinalAnswer { content, .. } => {
                 assert_eq!(content, "Here is your news summary.");
             }
             _ => panic!("Expected FinalAnswer"),
@@ -1003,7 +1003,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "ask_user_clarification");
                 assert_eq!(calls[0].arguments["question"], "หัวข้ออะไร?");
@@ -1022,7 +1022,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "ask_user_clarification");
                 assert_eq!(calls[0].arguments["question"], "คุณอยากหาข้อมูลเกี่ยวกับเรื่องอะไรคะ?");
@@ -1044,7 +1044,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "ask_user_clarification");
                 assert_eq!(calls[0].arguments["question"], "คุณต้องการหาข้อมูลเกี่ยวกับเรื่องอะไรครับ?");
@@ -1066,7 +1066,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::FinalAnswer(content) => {
+            LoopStepResult::FinalAnswer { content, .. } => {
                 assert!(content.contains("Based on the search results"));
             }
             _ => panic!("Final answer summaries must not be converted into choice boxes"),
@@ -1083,7 +1083,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "ask_user_clarification");
                 let opts = calls[0].arguments["options"].as_array().unwrap();
@@ -1104,7 +1104,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::FinalAnswer(content) => {
+            LoopStepResult::FinalAnswer { content, .. } => {
                 assert!(content.contains("พฤติกรรมและการเข้าสังคมของแฮมสเตอร์"));
             }
             _ => panic!("Structured articles with headers must not be converted into choice boxes"),
@@ -1122,7 +1122,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "ask_user_clarification");
                 let opts = calls[0].arguments["options"].as_array().unwrap();
@@ -1144,7 +1144,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::ToolCalls(calls) => {
+            LoopStepResult::ToolCalls { calls, .. } => {
                 assert_eq!(calls.len(), 1);
                 assert_eq!(calls[0].name, "ask_user_clarification");
                 let opts = calls[0].arguments["options"].as_array().unwrap();
@@ -1166,7 +1166,7 @@ mod tests {
             }]
         });
         match parse_loop_step_response(&json_resp) {
-            LoopStepResult::FinalAnswer(content) => {
+            LoopStepResult::FinalAnswer { content, .. } => {
                 assert!(content.contains("Based on the search results"));
             }
             _ => panic!("Final answer lead-in must not be converted into choice box"),
