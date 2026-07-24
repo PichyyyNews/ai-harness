@@ -49,6 +49,20 @@ def parse_aider_output(full_res):
         return [], ""
 
     thinking_lines = []
+
+    # 1. Extract HTML-style reasoning tags (<think>...</think>, <thinking-content...>, <thought>...</thought>)
+    def extract_html_thinking(match):
+        text = match.group(1).strip()
+        if text:
+            for line in text.splitlines():
+                if line.strip():
+                    thinking_lines.append(line.strip())
+        return ""
+
+    full_res = re.sub(r'<thinking-content[^>]*>([\s\S]*?)(?:</thinking-content>|$)', extract_html_thinking, full_res)
+    full_res = re.sub(r'<think>([\s\S]*?)(?:</think>|$)', extract_html_thinking, full_res)
+    full_res = re.sub(r'<thought>([\s\S]*?)(?:</thought>|$)', extract_html_thinking, full_res)
+
     answer_lines = []
     current_mode = "answer"
 
@@ -132,7 +146,7 @@ def main():
             "content": content,
             "edited_files": edited_files,
         }
-        
+
         # Ensure payload is on a fresh newline
         sys.stdout.write("\n")
         sys.stdout.flush()
