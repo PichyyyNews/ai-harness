@@ -391,9 +391,15 @@ function ChatWorkspace({ model, newChatRequest, sidebarCollapsed, onBack, onNoti
           cleanLine.includes("Repo-map:") ||
           cleanLine.includes("Initial repo scan") ||
           cleanLine.includes("Has it been deleted") ||
+          cleanLine.includes("Cur working dir:") ||
+          cleanLine.includes("Git working dir:") ||
+          cleanLine.includes("Note: in-chat filenames") ||
+          cleanLine.includes("Summarization failed") ||
+          cleanLine.includes("summarizer unexpectedly") ||
           cleanLine.startsWith("---") ||
           cleanLine.startsWith("===") ||
-          cleanLine.startsWith("Tokens:")
+          cleanLine.startsWith("Tokens:") ||
+          cleanLine.startsWith("───")
         ) {
           return;
         }

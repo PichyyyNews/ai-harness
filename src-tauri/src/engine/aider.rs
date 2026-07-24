@@ -70,6 +70,15 @@ pub async fn execute_aider_prompt(
             "Launching Aider sidecar process"
         );
 
+        // Ensure workspace is a git repository so Aider doesn't search parent directories
+        let git_dir = Path::new(&workspace).join(".git");
+        if !git_dir.exists() {
+            let _ = Command::new("git")
+                .arg("init")
+                .current_dir(&workspace)
+                .output();
+        }
+
         let mut cmd = Command::new("python");
         cmd.current_dir(&workspace);
         cmd.env("OPENAI_API_BASE", &api_base);
@@ -82,6 +91,7 @@ pub async fn execute_aider_prompt(
         cmd.arg("--model").arg(&model_arg);
         cmd.arg("--edit-format").arg("diff");
         cmd.arg("--no-show-model-warnings");
+        cmd.arg("--no-analytics");
         cmd.arg("--message").arg(&prompt);
         cmd.arg("--yes-always");
 
